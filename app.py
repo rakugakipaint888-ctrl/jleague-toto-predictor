@@ -3,7 +3,7 @@ import math
 import pandas as pd
 import streamlit as st
 
-from data_loader import get_match_defaults, load_matches
+from data_loader import TeamRecentStats, get_match_defaults, load_matches
 from teams import TEAM_OPTIONS, format_team_option
 
 
@@ -224,7 +224,7 @@ def create_reason(
 
 
 def get_team_option_index(team_name: str):
-    """CSVのクラブ名に対応するプルダウン位置を返す。"""
+    """取得データのクラブ名に対応するプルダウン位置を返す。"""
 
     for option_index, (_, option_team_name) in enumerate(
         TEAM_OPTIONS
@@ -234,6 +234,75 @@ def get_team_option_index(team_name: str):
 
     # CSVに未登録のクラブ名があっても、未選択として安全に表示する。
     return None
+
+
+@st.cache_data(ttl=6 * 60 * 60, show_spinner=False)
+def load_match_data():
+    """API使用量を抑えるため、取得結果を6時間キャッシュする。"""
+
+    return load_matches()
+
+
+def apply_team_averages(
+    match_number: int,
+    side: str,
+    team_stats: dict[str, TeamRecentStats],
+) -> None:
+    """チーム変更時だけ、直近成績の平均値を数値入力へ反映する。"""
+
+    selected_team = st.session_state.get(
+        f"{side}_team_{match_number}"
+    )
+
+    if not selected_team:
+        return
+
+    # 選択肢は（カテゴリー、クラブ名）の組。
+    team_name = selected_team[1]
+    stats = team_stats.get(team_name)
+
+    if not stats:
+        return
+
+    # コールバック内で更新するため、数値入力作成前に安全に反映できる。
+    st.session_state[f"{side}_scored_{match_number}"] = float(
+        stats.average_scored
+    )
+    st.session_state[f"{side}_conceded_{match_number}"] = float(
+        stats.average_conceded
+    )
+
+
+def get_recent_matches(
+    team_name: str,
+    team_stats: dict[str, TeamRecentStats],
+) -> tuple[str, ...]:
+    """選択クラブの自動取得済み直近試合を返す。"""
+
+    stats = team_stats.get(team_name)
+    return stats.recent_matches if stats else ()
+
+
+def create_average_input(
+    label: str,
+    key: str,
+    default_value: float,
+) -> float:
+    """初回値とチーム変更時のSession Stateを警告なく両立する。"""
+
+    input_options = {
+        "label": label,
+        "min_value": 0.0,
+        "max_value": 5.0,
+        "step": 0.1,
+        "key": key,
+    }
+
+    # コールバックで値が入っている場合は、valueを重ねて指定しない。
+    if key not in st.session_state:
+        input_options["value"] = float(default_value)
+
+    return st.number_input(**input_options)
 
 
 # --------------------------------------------------
@@ -248,29 +317,29 @@ st.caption(
 )
 
 st.warning(
-    "このアプリはVersion 2の試作モデルです。"
+    "このアプリはVersion 3の試作モデルです。"
     "的中や利益を保証するものではありません。"
 )
 
-# app.pyは保存場所を直接扱わず、data_loader.pyから受け取る。
-# CSVがない場合も空データが返るため、手入力でそのまま利用できる。
-match_data_result = load_matches()
+# app.pyは取得元を直接扱わず、data_loader.pyから共通形式で受け取る。
+# APIとCSVが利用できなくても空データが返り、手入力で利用できる。
+match_data_result = load_match_data()
 
 if match_data_result.is_loaded:
     st.success(match_data_result.message)
-elif match_data_result.status == "error":
-    st.warning(match_data_result.message)
 else:
+    # 技術的なエラー内容は出さず、そのまま利用できる方法だけを案内する。
     st.info(match_data_result.message)
 
 with st.expander("入力方法を見る"):
     st.write(
         """
-        各チームについて、直近5試合の得点と失点を
-        合計し、5で割った数字を入力してください。
+        チームを選ぶと、取得できた直近5試合から
+        平均得点と平均失点を自動入力します。
+        自動入力後の数字は自由に修正できます。
 
-        例：直近5試合の得点が
-        2、1、0、3、1なら、平均得点は1.4です。
+        APIを利用できない場合はCSV、CSVもない場合は
+        手入力へ自動で切り替わります。
         """
     )
 
@@ -281,116 +350,135 @@ with st.expander("入力方法を見る"):
 
 match_inputs = []
 
-with st.form("prediction_form"):
+for match_number in range(1, 14):
 
-    for match_number in range(1, 14):
+    st.subheader(f"第{match_number}試合")
 
-        st.subheader(f"第{match_number}試合")
-
-        match_defaults = get_match_defaults(
-            match_data_result.matches,
-            match_number,
-        )
-
-        selected_home_team = st.selectbox(
-            "ホームチーム",
-            options=TEAM_OPTIONS,
-            index=get_team_option_index(
-                match_defaults["home_team"]
-            ),
-            format_func=format_team_option,
-            placeholder="カテゴリーからチームを選択",
-            key=f"home_team_{match_number}",
-        )
-
-        selected_away_team = st.selectbox(
-            "アウェイチーム",
-            options=TEAM_OPTIONS,
-            index=get_team_option_index(
-                match_defaults["away_team"]
-            ),
-            format_func=format_team_option,
-            placeholder="カテゴリーからチームを選択",
-            key=f"away_team_{match_number}",
-        )
-
-        # 選択肢は（カテゴリー、クラブ名）の組。
-        # 計算結果やCSVには、従来どおりクラブ名だけを渡す。
-        home_team = (
-            selected_home_team[1]
-            if selected_home_team
-            else ""
-        )
-
-        away_team = (
-            selected_away_team[1]
-            if selected_away_team
-            else ""
-        )
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-            st.markdown("**ホーム直近5試合**")
-
-            home_scored = st.number_input(
-                "平均得点",
-                min_value=0.0,
-                max_value=5.0,
-                value=float(match_defaults["home_scored"]),
-                step=0.1,
-                key=f"home_scored_{match_number}",
-            )
-
-            home_conceded = st.number_input(
-                "平均失点",
-                min_value=0.0,
-                max_value=5.0,
-                value=float(match_defaults["home_conceded"]),
-                step=0.1,
-                key=f"home_conceded_{match_number}",
-            )
-
-        with col2:
-            st.markdown("**アウェイ直近5試合**")
-
-            away_scored = st.number_input(
-                "平均得点",
-                min_value=0.0,
-                max_value=5.0,
-                value=float(match_defaults["away_scored"]),
-                step=0.1,
-                key=f"away_scored_{match_number}",
-            )
-
-            away_conceded = st.number_input(
-                "平均失点",
-                min_value=0.0,
-                max_value=5.0,
-                value=float(match_defaults["away_conceded"]),
-                step=0.1,
-                key=f"away_conceded_{match_number}",
-            )
-
-        match_inputs.append(
-            {
-                "match_number": match_number,
-                "home_team": home_team.strip(),
-                "away_team": away_team.strip(),
-                "home_scored": home_scored,
-                "home_conceded": home_conceded,
-                "away_scored": away_scored,
-                "away_conceded": away_conceded,
-            }
-        )
-
-        st.divider()
-
-    submitted = st.form_submit_button(
-        "13試合を予想する",
-        type="primary",
-        use_container_width=True,
+    match_defaults = get_match_defaults(
+        match_data_result.matches,
+        match_number,
     )
+
+    if match_defaults["match_date"]:
+        st.caption(f'試合日：{match_defaults["match_date"]}')
+
+    selected_home_team = st.selectbox(
+        "ホームチーム",
+        options=TEAM_OPTIONS,
+        index=get_team_option_index(
+            match_defaults["home_team"]
+        ),
+        format_func=format_team_option,
+        placeholder="カテゴリーからチームを選択",
+        key=f"home_team_{match_number}",
+        on_change=apply_team_averages,
+        args=(
+            match_number,
+            "home",
+            match_data_result.team_stats,
+        ),
+    )
+
+    selected_away_team = st.selectbox(
+        "アウェイチーム",
+        options=TEAM_OPTIONS,
+        index=get_team_option_index(
+            match_defaults["away_team"]
+        ),
+        format_func=format_team_option,
+        placeholder="カテゴリーからチームを選択",
+        key=f"away_team_{match_number}",
+        on_change=apply_team_averages,
+        args=(
+            match_number,
+            "away",
+            match_data_result.team_stats,
+        ),
+    )
+
+    # 計算結果やCSVには、従来どおりクラブ名だけを渡す。
+    home_team = (
+        selected_home_team[1]
+        if selected_home_team
+        else ""
+    )
+    away_team = (
+        selected_away_team[1]
+        if selected_away_team
+        else ""
+    )
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("**ホーム直近5試合**")
+
+        home_scored = create_average_input(
+            label="平均得点",
+            key=f"home_scored_{match_number}",
+            default_value=match_defaults["home_scored"],
+        )
+
+        home_conceded = create_average_input(
+            label="平均失点",
+            key=f"home_conceded_{match_number}",
+            default_value=match_defaults["home_conceded"],
+        )
+
+    with col2:
+        st.markdown("**アウェイ直近5試合**")
+
+        away_scored = create_average_input(
+            label="平均得点",
+            key=f"away_scored_{match_number}",
+            default_value=match_defaults["away_scored"],
+        )
+
+        away_conceded = create_average_input(
+            label="平均失点",
+            key=f"away_conceded_{match_number}",
+            default_value=match_defaults["away_conceded"],
+        )
+
+    home_recent_matches = get_recent_matches(
+        home_team,
+        match_data_result.team_stats,
+    )
+    away_recent_matches = get_recent_matches(
+        away_team,
+        match_data_result.team_stats,
+    )
+
+    if home_recent_matches or away_recent_matches:
+        with st.expander("自動取得した直近5試合を見る"):
+            if home_recent_matches:
+                st.write(f"**{home_team}**")
+                for recent_match in home_recent_matches:
+                    st.caption(recent_match)
+            if away_recent_matches:
+                st.write(f"**{away_team}**")
+                for recent_match in away_recent_matches:
+                    st.caption(recent_match)
+
+    match_inputs.append(
+        {
+            "match_number": match_number,
+            "home_team": home_team.strip(),
+            "away_team": away_team.strip(),
+            "home_scored": home_scored,
+            "home_conceded": home_conceded,
+            "away_scored": away_scored,
+            "away_conceded": away_conceded,
+        }
+    )
+
+    st.divider()
+
+submitted = st.button(
+    "13試合を予想する",
+    type="primary",
+    width="stretch",
+)
 
 
 # --------------------------------------------------
@@ -515,7 +603,7 @@ if submitted:
                     "予想スコア",
                 ]
             ],
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -570,7 +658,7 @@ if submitted:
             data=csv_data,
             file_name="toto_prediction.csv",
             mime="text/csv",
-            use_container_width=True,
+            width="stretch",
         )
 
         st.caption(

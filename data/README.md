@@ -1,20 +1,23 @@
-# 試合データ
+# CSV試合データ
 
-このフォルダに `matches.csv` を置くと、アプリ起動時に対戦カードと平均値を読み込みます。
-`matches.csv` がなくても、従来どおり手入力で利用できます。
+APIを利用できない場合、このフォルダの`matches.csv`を自動で読み込みます。
+`matches.csv`がなくても、手入力モードで正常に起動します。
 
 ## CSVの列
 
 ```csv
-match_number,home_team,away_team,home_scored,home_conceded,away_scored,away_conceded
-1,鹿島アントラーズ,浦和レッズ,1.8,0.8,1.4,1.0
-2,柏レイソル,ＦＣ東京,1.6,1.0,1.2,1.4
+match_number,match_date,home_team,away_team,home_scored,home_conceded,away_scored,away_conceded,home_recent_matches,away_recent_matches
+1,2026-08-07,鹿島アントラーズ,浦和レッズ,1.8,0.8,1.4,1.0,,
+2,2026-08-08,柏レイソル,ＦＣ東京,1.6,1.0,1.2,1.4,,
 ```
 
-- `home_team` と `away_team` は必須です。
-- `match_number` を省略した場合は、CSVの上から第1試合、第2試合として扱います。
-- 4つの平均値を省略した場合は、Version 1と同じ初期値を使います。
-- 平均値は `0.0` から `5.0` の範囲で入力します。
-- totoに合わせて、第1試合から第13試合までを読み込みます。
+- 必須列：`home_team`、`away_team`
+- 任意列：それ以外のすべての列
+- `match_number`を省略した場合：上から第1～第13試合として扱う
+- 平均値を省略した場合：Version 1と同じ初期値を使用
+- 平均値の範囲：`0.0`～`5.0`
+- `match_date`の推奨形式：`YYYY-MM-DD`
+- `home_recent_matches`と`away_recent_matches`：複数試合を` / `で区切る
+- 読み込み上限：第1～第13試合
 
-将来Jリーグ公式データや無料APIへ移行する場合は、`data_loader.py` に新しいデータ取得クラスを追加します。`app.py` の計算処理は変更せずに差し替えられます。
+APIへ戻す場合は`API_FOOTBALL_KEY`を設定してアプリを再起動します。
