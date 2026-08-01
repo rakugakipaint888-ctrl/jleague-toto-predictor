@@ -7,6 +7,13 @@ from data_loader import (
     get_match_defaults,
     load_matches,
 )
+from elo_rating import (
+    EloCalculationResult,
+    adjust_expected_goals,
+    get_elo_cache_path,
+    get_team_elo,
+    load_or_calculate_elo,
+)
 from prediction import (
     calculate_expected_goals,
     calculate_match_probabilities,
@@ -14,7 +21,11 @@ from prediction import (
     get_confidence_label,
     get_toto_prediction,
 )
-from teams import TEAM_OPTIONS, format_team_option
+from teams import (
+    TEAM_CATEGORY_BY_NAME,
+    TEAM_OPTIONS,
+    format_team_option,
+)
 
 
 # --------------------------------------------------
@@ -51,6 +62,58 @@ def load_match_data():
     """公式サイトへのアクセスを抑えるため6時間キャッシュする。"""
 
     return load_matches()
+
+
+@st.cache_data(ttl=6 * 60 * 60, show_spinner=False)
+def load_elo_data(completed_matches):
+    """同じ試合履歴のEloはメモリ・ファイルキャッシュから返す。"""
+
+    return load_or_calculate_elo(
+        completed_matches,
+        team_categories=TEAM_CATEGORY_BY_NAME,
+        cache_path=get_elo_cache_path(),
+    )
+
+
+def create_elo_table(elo_result: EloCalculationResult) -> pd.DataFrame:
+    """カテゴリー内順位を付けた全60クラブのElo一覧を作る。"""
+
+    rows = []
+
+    for category in ("J1", "J2", "J3"):
+        category_ratings = sorted(
+            (
+                rating
+                for rating in elo_result.ratings.values()
+                if rating.category == category
+            ),
+            key=lambda rating: rating.rating,
+            reverse=True,
+        )
+
+        for rank, rating in enumerate(category_ratings, start=1):
+            rows.append(
+                {
+                    "カテゴリー": category,
+                    "順位": rank,
+                    "チーム名": rating.team_name,
+                    "Elo": round(rating.rating, 1),
+                    "対象試合数": rating.matches_played,
+                    "最終更新日": (
+                        rating.last_updated.isoformat()
+                        if rating.last_updated
+                        else "データなし"
+                    ),
+                }
+            )
+
+    return pd.DataFrame(rows)
+
+
+def format_elo_value(elo_value) -> str:
+    """未取得を含む画面表示用のElo文字列を返す。"""
+
+    return f"{float(elo_value):.1f}" if elo_value is not None else "未取得"
 
 
 def apply_team_stats(
@@ -280,7 +343,7 @@ st.caption(
 )
 
 st.warning(
-    "このアプリはVersion 3の試作モデルです。"
+    "このアプリはVersion 4の試作モデルです。"
     "的中や利益を保証するものではありません。"
 )
 
@@ -294,12 +357,42 @@ else:
     # 技術的なエラー内容は出さず、そのまま利用できる方法だけを案内する。
     st.info(match_data_result.message)
 
+elo_result = None
+
+if match_data_result.completed_matches:
+    try:
+        elo_result = load_elo_data(match_data_result.completed_matches)
+    except Exception:
+        # キャッシュ破損や想定外データでもVersion3の予測は継続する。
+        elo_result = None
+
+elo_available = bool(elo_result and elo_result.is_available)
+
+use_elo_adjustment = st.toggle(
+    "Elo補正を使用する",
+    value=True,
+    help=(
+        "ONはVersion4、OFFはVersion3と同じ期待得点で計算します。"
+    ),
+    key="use_elo_adjustment",
+)
+
+elo_adjustment_enabled = bool(use_elo_adjustment and elo_available)
+
+if not elo_available:
+    st.warning(
+        "Eloデータを取得できないため、Elo補正なしで計算しました。"
+    )
+
 with st.expander("入力方法を見る"):
     st.write(
         """
         チームを選ぶと、取得できた直近5試合から
         平均得点・平均失点・順位・ホーム／アウェイ成績を自動入力します。
         自動入力後の数字は自由に修正できます。
+
+        Elo補正をONにすると、公式試合結果から計算した実力差を
+        Version3の期待得点へ最大±15%の範囲で反映します。
 
         Jリーグ公式データを取得できない場合はCSV、CSVもない場合は
         手入力へ自動で切り替わります。
@@ -310,9 +403,10 @@ edit_detail_stats = st.toggle(
     "順位・ホーム／アウェイ成績を修正する",
     value=False,
     help=(
-        "予測計算は現在、平均得点・平均失点だけを使用します。"
-        "順位と会場別成績は将来の分析機能用です。"
+        "予測計算は平均得点・平均失点と、ONの場合はEloを使用します。"
+        "順位と会場別成績はVersion5以降の分析機能用です。"
     ),
+    key="edit_detail_stats",
 )
 
 editable_match_number = None
@@ -387,6 +481,22 @@ for match_number in range(1, 14):
         selected_away_team[1]
         if selected_away_team
         else ""
+    )
+
+    home_elo = (
+        get_team_elo(home_team, elo_result)
+        if elo_available
+        else None
+    )
+    away_elo = (
+        get_team_elo(away_team, elo_result)
+        if elo_available
+        else None
+    )
+    elo_difference = (
+        home_elo - away_elo
+        if home_elo is not None and away_elo is not None
+        else None
     )
 
     col1, col2 = st.columns(2)
@@ -469,6 +579,7 @@ for match_number in range(1, 14):
                 "ホーム成績",
             )
         )
+        st.caption(f"ホームElo：{format_elo_value(home_elo)}")
 
     with detail_summary_col2:
         st.caption(
@@ -478,6 +589,10 @@ for match_number in range(1, 14):
                 "アウェイ成績",
             )
         )
+        st.caption(f"アウェイElo：{format_elo_value(away_elo)}")
+
+    if elo_difference is not None:
+        st.caption(f"Elo差（ホーム－アウェイ）：{elo_difference:+.1f}")
 
     home_recent_matches = get_recent_matches(
         home_team,
@@ -512,6 +627,9 @@ for match_number in range(1, 14):
             "away_rank": away_detail_values["rank"],
             "home_record": home_record,
             "away_record": away_record,
+            "home_elo": home_elo,
+            "away_elo": away_elo,
+            "elo_difference": elo_difference,
         }
     )
 
@@ -536,8 +654,8 @@ if submitted:
 
         try:
             (
-                home_expected,
-                away_expected,
+                home_expected_before_elo,
+                away_expected_before_elo,
             ) = calculate_expected_goals(
                 home_scored=match["home_scored"],
                 home_conceded=match["home_conceded"],
@@ -545,9 +663,32 @@ if submitted:
                 away_conceded=match["away_conceded"],
             )
 
+            match_elo_enabled = bool(
+                elo_adjustment_enabled
+                and match["home_elo"] is not None
+                and match["away_elo"] is not None
+            )
+
+            if (
+                match["home_elo"] is not None
+                and match["away_elo"] is not None
+            ):
+                expected_goals = adjust_expected_goals(
+                    home_expected=home_expected_before_elo,
+                    away_expected=away_expected_before_elo,
+                    home_elo=match["home_elo"],
+                    away_elo=match["away_elo"],
+                    enabled=match_elo_enabled,
+                )
+                home_expected_after_elo = expected_goals.home_after
+                away_expected_after_elo = expected_goals.away_after
+            else:
+                home_expected_after_elo = home_expected_before_elo
+                away_expected_after_elo = away_expected_before_elo
+
             probabilities = calculate_match_probabilities(
-                home_expected=home_expected,
-                away_expected=away_expected,
+                home_expected=home_expected_after_elo,
+                away_expected=away_expected_after_elo,
             )
 
             prediction, top_probability = get_toto_prediction(
@@ -565,8 +706,8 @@ if submitted:
             )
 
             reason = create_reason(
-                home_expected=home_expected,
-                away_expected=away_expected,
+                home_expected=home_expected_after_elo,
+                away_expected=away_expected_after_elo,
                 home_win=probabilities["home_win"],
                 draw=probabilities["draw"],
                 away_win=probabilities["away_win"],
@@ -604,6 +745,38 @@ if submitted:
                         f'{probabilities["away_goals"]}'
                     ),
                     "予想理由": reason,
+                    "home_elo": (
+                        round(match["home_elo"], 2)
+                        if match["home_elo"] is not None
+                        else None
+                    ),
+                    "away_elo": (
+                        round(match["away_elo"], 2)
+                        if match["away_elo"] is not None
+                        else None
+                    ),
+                    "elo_difference": (
+                        round(match["elo_difference"], 2)
+                        if match["elo_difference"] is not None
+                        else None
+                    ),
+                    "home_expected_before_elo": round(
+                        home_expected_before_elo,
+                        4,
+                    ),
+                    "away_expected_before_elo": round(
+                        away_expected_before_elo,
+                        4,
+                    ),
+                    "home_expected_after_elo": round(
+                        home_expected_after_elo,
+                        4,
+                    ),
+                    "away_expected_after_elo": round(
+                        away_expected_after_elo,
+                        4,
+                    ),
+                    "elo_adjustment_enabled": match_elo_enabled,
                 }
             )
 
@@ -616,6 +789,7 @@ if submitted:
     if results:
 
         result_df = pd.DataFrame(results)
+        st.session_state["latest_prediction_results"] = result_df.copy()
 
         st.success("13試合の予想が完了しました。")
 
@@ -688,6 +862,28 @@ if submitted:
                     f'判定：{result["判定"]}'
                 )
 
+                st.write(
+                    "Elo："
+                    f'ホーム {format_elo_value(result["home_elo"])} ／ '
+                    f'アウェイ {format_elo_value(result["away_elo"])} ／ '
+                    "差 "
+                    + (
+                        f'{result["elo_difference"]:+.1f}'
+                        if result["elo_difference"] is not None
+                        else "未取得"
+                    )
+                )
+
+                st.write(
+                    "期待得点："
+                    f'補正前 {result["home_expected_before_elo"]:.2f}'
+                    f'－{result["away_expected_before_elo"]:.2f} ／ '
+                    f'補正後 {result["home_expected_after_elo"]:.2f}'
+                    f'－{result["away_expected_after_elo"]:.2f} ／ '
+                    "Elo補正 "
+                    f'{"ON" if result["elo_adjustment_enabled"] else "OFF"}'
+                )
+
                 st.info(result["予想理由"])
 
         st.header("CSV保存")
@@ -708,3 +904,48 @@ if submitted:
             "確率は統計モデルによる推定値です。"
             "実際の結果や的中を保証するものではありません。"
         )
+
+
+# --------------------------------------------------
+# 全クラブElo一覧
+# --------------------------------------------------
+
+if elo_available:
+    with st.expander("J1・J2・J3 全クラブの現在Elo一覧"):
+        elo_sort_mode = st.selectbox(
+            "並べ替え",
+            options=("Elo順（高い順）", "カテゴリー・順位順"),
+            key="elo_sort_mode",
+        )
+        elo_table = create_elo_table(elo_result)
+
+        if elo_sort_mode == "Elo順（高い順）":
+            elo_table = elo_table.sort_values(
+                ["Elo", "チーム名"],
+                ascending=[False, True],
+            )
+        else:
+            category_order = {"J1": 1, "J2": 2, "J3": 3}
+            elo_table = (
+                elo_table.assign(
+                    _category_order=elo_table["カテゴリー"].map(
+                        category_order
+                    )
+                )
+                .sort_values(["_category_order", "順位"])
+                .drop(columns="_category_order")
+            )
+
+        st.dataframe(
+            elo_table.reset_index(drop=True),
+            width="stretch",
+            hide_index=True,
+        )
+
+        if elo_result.data_start_date and elo_result.data_end_date:
+            st.caption(
+                "対象期間："
+                f"{elo_result.data_start_date.isoformat()}～"
+                f"{elo_result.data_end_date.isoformat()} ／ "
+                f"完了試合 {elo_result.processed_match_count}件"
+            )

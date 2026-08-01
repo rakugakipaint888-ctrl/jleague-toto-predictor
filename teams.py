@@ -1,8 +1,13 @@
-"""Jリーグのクラブ名と所属カテゴリーを管理する。
+"""Jリーグのクラブ名・所属カテゴリー・表記正規化を管理する。
 
 クラブの昇降格があった場合は、このファイルだけを更新する。
 2026/27シーズンのJリーグ公式クラブ編成に基づく。
 """
+
+from __future__ import annotations
+
+import unicodedata
+from typing import Any, Mapping, Optional
 
 
 # --------------------------------------------------
@@ -95,6 +100,73 @@ TEAM_CATEGORIES = {
     "J2": J2,
     "J3": J3,
 }
+
+TEAM_CATEGORY_BY_NAME = {
+    team_name: category
+    for category, team_names in TEAM_CATEGORIES.items()
+    for team_name in team_names
+}
+
+
+def normalize_team_key(value: Any) -> str:
+    """クラブ名比較用に空白を除いたNFKC文字列へそろえる。"""
+
+    if value is None:
+        return ""
+
+    try:
+        if value != value:  # NaN / pandas.NA相当
+            return ""
+    except (TypeError, ValueError):
+        pass
+
+    normalized = unicodedata.normalize("NFKC", str(value)).strip()
+    return "".join(
+        character
+        for character in normalized
+        if not character.isspace()
+    )
+
+
+_CANONICAL_TEAM_NAME_MAP = {
+    normalize_team_key(team_name): team_name
+    for team_name in TEAM_CATEGORY_BY_NAME
+}
+
+
+def normalize_team_name(
+    value: Any,
+    aliases: Optional[Mapping[str, str]] = None,
+) -> str:
+    """正式名・略称・全半角の揺れを現在のクラブ名へそろえる。"""
+
+    normalized_key = normalize_team_key(value)
+
+    if not normalized_key:
+        return ""
+
+    canonical_name = _CANONICAL_TEAM_NAME_MAP.get(normalized_key)
+
+    if canonical_name:
+        return canonical_name
+
+    if aliases:
+        alias_map = {
+            normalize_team_key(alias): team_name
+            for alias, team_name in aliases.items()
+        }
+        canonical_name = alias_map.get(normalized_key)
+
+        if canonical_name:
+            return canonical_name
+
+    return str(value).strip()
+
+
+def get_team_category(team_name: Any) -> Optional[str]:
+    """表記を正規化して現在の所属カテゴリーを返す。"""
+
+    return TEAM_CATEGORY_BY_NAME.get(normalize_team_name(team_name))
 
 
 def create_team_options() -> list[tuple[str, str]]:

@@ -37,3 +37,29 @@ match_number,match_date,home_team,away_team,home_scored,home_conceded,away_score
 
 平均値を省略・空欄・範囲外にした場合はVersion 1の初期値を使います。
 順位・会場別成績の列はすべて省略可能で、従来形式との互換性があります。
+
+## 実行時キャッシュ
+
+Version4は`data/cache/`を自動作成し、次のJSONを保存します。
+
+- `official_match_results.json`：取得済みの現行・前シーズン相当の試合結果
+- `elo_ratings.json`：処理済み試合ID、全クラブElo、試合数、最終更新日
+
+これらは入力CSVではなく再計算を減らすための内部ファイルです。Git管理対象外で、
+削除しても次回の公式取得・Elo計算時に再生成されます。
+
+## 予想結果CSVのVersion4追加列
+
+画面の「予想結果をCSVで保存」では、既存列に次の8列を追加します。
+
+- `home_elo`
+- `away_elo`
+- `elo_difference`
+- `home_expected_before_elo`
+- `away_expected_before_elo`
+- `home_expected_after_elo`
+- `away_expected_after_elo`
+- `elo_adjustment_enabled`
+
+Elo履歴を取得できない場合、Elo値は空欄、補正前後の期待得点は同値、
+`elo_adjustment_enabled`は`False`になります。

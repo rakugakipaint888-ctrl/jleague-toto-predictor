@@ -7,3 +7,6 @@ __pycache__/
 
 # ローカルだけで使うStreamlit設定・秘密情報
 .streamlit/secrets.toml
+
+# 公式試合履歴・計算済みEloの実行時キャッシュ
+data/cache/

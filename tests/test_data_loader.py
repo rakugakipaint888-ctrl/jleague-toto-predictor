@@ -255,12 +255,22 @@ class DataLoaderTest(unittest.TestCase):
                     return FakeResponse(html)
             raise AssertionError(f"想定外のURL: {url}")
 
-        source = JLeagueOfficialDataSource(
-            now=datetime(2026, 8, 1, 12, 0, tzinfo=JAPAN_TIMEZONE),
-        )
+        with tempfile.TemporaryDirectory() as temp_directory:
+            cache_path = Path(temp_directory) / "official_results.json"
+            source = JLeagueOfficialDataSource(
+                now=datetime(2026, 8, 1, 12, 0, tzinfo=JAPAN_TIMEZONE),
+                cache_path=cache_path,
+            )
 
-        with patch("data_loader.requests.get", side_effect=fake_get):
-            result = load_matches(source)
+            with patch("data_loader.requests.get", side_effect=fake_get):
+                result = load_matches(source)
+
+            # 同じ取得結果は永続キャッシュから読み、再アクセスしない。
+            with patch(
+                "data_loader.requests.get",
+                side_effect=AssertionError("公式サイトへ再接続してはいけない"),
+            ):
+                cached_result = load_matches(source)
 
         self.assertTrue(result.is_loaded)
         self.assertEqual(len(request_log), 5)
@@ -274,6 +284,16 @@ class DataLoaderTest(unittest.TestCase):
         self.assertEqual(result.matches.iloc[0]["home_rank"], 2)
         self.assertEqual(result.matches.iloc[0]["home_wins"], 4)
         self.assertEqual(result.matches.iloc[0]["home_losses"], 1)
+        self.assertEqual(len(result.completed_matches), 6)
+        self.assertEqual(result.completed_matches[0].category, "J1")
+        self.assertEqual(result.data_start_date.isoformat(), "2026-06-06")
+        self.assertEqual(result.data_end_date.isoformat(), "2026-07-05")
+        self.assertFalse(result.official_cache_used)
+        self.assertTrue(cached_result.official_cache_used)
+        self.assertEqual(
+            cached_result.completed_matches,
+            result.completed_matches,
+        )
         self.assertEqual(
             len(result.team_stats["鹿島アントラーズ"].recent_matches),
             5,

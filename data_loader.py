@@ -7,19 +7,31 @@
 
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from io import StringIO
 from pathlib import Path
-from typing import Any, Optional, Protocol, Sequence
+from typing import Any, Mapping, Optional, Protocol, Sequence
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
 
-from teams import J1, J2, J3
+from config import (
+    OFFICIAL_RESULTS_CACHE_MAX_STALE_SECONDS,
+    OFFICIAL_RESULTS_CACHE_TTL_SECONDS,
+    OFFICIAL_RESULTS_CACHE_VERSION,
+)
+from teams import (
+    J1,
+    J2,
+    J3,
+    normalize_team_key,
+    normalize_team_name,
+)
 
 
 # --------------------------------------------------
@@ -28,6 +40,9 @@ from teams import J1, J2, J3
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_MATCHES_PATH = PROJECT_ROOT / "data" / "matches.csv"
+DEFAULT_OFFICIAL_RESULTS_CACHE_PATH = (
+    PROJECT_ROOT / "data" / "cache" / "official_match_results.json"
+)
 
 JAPAN_TIMEZONE = ZoneInfo("Asia/Tokyo")
 
@@ -45,7 +60,7 @@ VISION_LEAGUE_FRAME_IDS = (35, 36)
 
 REQUEST_HEADERS = {
     "User-Agent": (
-        "Mozilla/5.0 (compatible; JLeagueTotoPersonalApp/3.0; personal-use)"
+        "Mozilla/5.0 (compatible; JLeagueTotoPersonalApp/4.0; personal-use)"
     ),
     "Accept-Language": "ja,en;q=0.5",
 }
@@ -208,7 +223,7 @@ def normalize_text(value: Any) -> str:
 
 
 OFFICIAL_TEAM_NAME_MAP = {
-    normalize_text(alias): canonical_name
+    normalize_team_key(alias): canonical_name
     for alias, canonical_name in (
         *OFFICIAL_TEAM_ABBREVIATIONS.items(),
         *((team_name, team_name) for team_name in ALL_TEAM_NAMES),
@@ -219,8 +234,7 @@ OFFICIAL_TEAM_NAME_MAP = {
 def translate_official_team_name(team_name: Any) -> str:
     """公式サイトの略称・正式名をteams.pyのクラブ名へ変換する。"""
 
-    cleaned_name = normalize_text(team_name)
-    return OFFICIAL_TEAM_NAME_MAP.get(cleaned_name, str(team_name).strip())
+    return normalize_team_name(team_name, OFFICIAL_TEAM_ABBREVIATIONS)
 
 
 # --------------------------------------------------
@@ -296,6 +310,7 @@ class OfficialMatch:
     away_team: str
     home_goals: Optional[int] = None
     away_goals: Optional[int] = None
+    category: str = ""
 
     @property
     def is_completed(self) -> bool:
@@ -320,6 +335,158 @@ class OfficialSchedulePage:
             f"?competition_years={self.year_id}"
             f"&{frame_parameters}"
         )
+
+
+@dataclass(frozen=True)
+class OfficialDataBundle:
+    """公式取得した画面用データとElo用の完了試合履歴。"""
+
+    matches: pd.DataFrame
+    completed_matches: tuple[OfficialMatch, ...]
+    fetched_at: datetime
+    from_cache: bool = False
+
+    @property
+    def data_start_date(self) -> Optional[date]:
+        if not self.completed_matches:
+            return None
+        return min(match.match_time for match in self.completed_matches).date()
+
+    @property
+    def data_end_date(self) -> Optional[date]:
+        if not self.completed_matches:
+            return None
+        return max(match.match_time for match in self.completed_matches).date()
+
+
+def _serialize_official_match(match: OfficialMatch) -> dict[str, Any]:
+    return {
+        "match_time": match.match_time.isoformat(),
+        "home_team": match.home_team,
+        "away_team": match.away_team,
+        "home_goals": match.home_goals,
+        "away_goals": match.away_goals,
+        "category": match.category,
+    }
+
+
+def _deserialize_official_matches(
+    rows: Sequence[dict[str, Any]],
+) -> list[OfficialMatch]:
+    matches = []
+
+    for row in rows:
+        try:
+            match_time = datetime.fromisoformat(str(row["match_time"]))
+            if match_time.tzinfo is None:
+                match_time = match_time.replace(tzinfo=JAPAN_TIMEZONE)
+
+            home_team = normalize_team_name(row["home_team"])
+            away_team = normalize_team_name(row["away_team"])
+            home_goals = row.get("home_goals")
+            away_goals = row.get("away_goals")
+
+            matches.append(
+                OfficialMatch(
+                    match_time=match_time.astimezone(JAPAN_TIMEZONE),
+                    home_team=home_team,
+                    away_team=away_team,
+                    home_goals=(
+                        int(home_goals)
+                        if home_goals is not None
+                        else None
+                    ),
+                    away_goals=(
+                        int(away_goals)
+                        if away_goals is not None
+                        else None
+                    ),
+                    category=str(row.get("category", "")),
+                )
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+
+    return matches
+
+
+def _read_official_results_cache(
+    cache_path: Path,
+    season_start_year: int,
+) -> Optional[dict[str, Any]]:
+    try:
+        cache = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+
+    if (
+        cache.get("version") != OFFICIAL_RESULTS_CACHE_VERSION
+        or cache.get("season_start_year") != season_start_year
+        or not cache.get("fetched_at")
+    ):
+        return None
+
+    return cache
+
+
+def _official_cache_age_seconds(
+    cache: Optional[dict[str, Any]],
+    reference_time: datetime,
+) -> Optional[float]:
+    if cache is None:
+        return None
+
+    try:
+        fetched_at = datetime.fromisoformat(str(cache["fetched_at"]))
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    if fetched_at.tzinfo is None:
+        fetched_at = fetched_at.replace(tzinfo=JAPAN_TIMEZONE)
+
+    return max(
+        0.0,
+        (reference_time - fetched_at.astimezone(JAPAN_TIMEZONE)).total_seconds(),
+    )
+
+
+def _write_official_results_cache(
+    cache_path: Path,
+    season_start_year: int,
+    fetched_at: datetime,
+    current_matches: Sequence[OfficialMatch],
+    history_matches: Sequence[OfficialMatch],
+    rankings: Mapping[str, int],
+) -> None:
+    payload = {
+        "version": OFFICIAL_RESULTS_CACHE_VERSION,
+        "season_start_year": season_start_year,
+        "fetched_at": fetched_at.isoformat(),
+        "current_matches": [
+            _serialize_official_match(match)
+            for match in current_matches
+        ],
+        "history_matches": [
+            _serialize_official_match(match)
+            for match in history_matches
+        ],
+        "rankings": {
+            team_name: int(rank)
+            for team_name, rank in rankings.items()
+        },
+    }
+
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = cache_path.with_suffix(cache_path.suffix + ".tmp")
+        temporary_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        temporary_path.replace(cache_path)
+    except OSError:
+        # キャッシュ保存失敗で公式取得や予測を停止させない。
+        return
 
 
 @dataclass(frozen=True)
@@ -358,6 +525,9 @@ class JLeagueOfficialDataSource:
 
     timeout_seconds: float = 15.0
     now: Optional[datetime] = None
+    cache_path: Path = DEFAULT_OFFICIAL_RESULTS_CACHE_PATH
+    cache_ttl_seconds: int = OFFICIAL_RESULTS_CACHE_TTL_SECONDS
+    cache_max_stale_seconds: int = OFFICIAL_RESULTS_CACHE_MAX_STALE_SECONDS
 
     @property
     def name(self) -> str:
@@ -470,48 +640,135 @@ class JLeagueOfficialDataSource:
 
         return rankings
 
-    def load(self) -> pd.DataFrame:
-        """今後の試合と、全クラブの直近5試合統計を返す。"""
+    def _create_bundle(
+        self,
+        current_matches: Sequence[OfficialMatch],
+        history_matches: Sequence[OfficialMatch],
+        rankings: dict[str, int],
+        fetched_at: datetime,
+        from_cache: bool,
+    ) -> OfficialDataBundle:
+        reference_time = self._reference_time()
+        completed_matches = _deduplicate_matches(
+            match
+            for match in (*current_matches, *history_matches)
+            if match.is_completed and match.match_time <= reference_time
+        )
+        team_stats = _calculate_team_stats(completed_matches, rankings)
 
-        try:
-            current_matches = [
-                match
-                for page in self._current_schedule_pages()
-                for match in self._fetch_schedule_page(page)
-            ]
-
-            if not current_matches:
-                raise MatchDataNotFoundError(
-                    "Jリーグ公式サイトに試合データがありません。"
-                )
-
-            all_matches = list(current_matches)
-            current_completed = [
-                match for match in current_matches if match.is_completed
-            ]
-
-            # 現行シーズンだけで全クラブ5試合に満たない時期は前大会で補う。
-            if _needs_history(current_completed):
-                for page in self._history_schedule_pages():
-                    all_matches.extend(self._fetch_schedule_page(page))
-
-            completed_matches = _deduplicate_matches(
-                match for match in all_matches if match.is_completed
-            )
-            rankings = self._fetch_rankings()
-            team_stats = _calculate_team_stats(completed_matches, rankings)
-
-            return _create_upcoming_matches(
+        return OfficialDataBundle(
+            matches=_create_upcoming_matches(
                 current_matches,
                 team_stats,
-                self._reference_time(),
+                reference_time,
+            ),
+            completed_matches=tuple(
+                sorted(
+                    completed_matches,
+                    key=lambda match: match.match_time,
+                )
+            ),
+            fetched_at=fetched_at,
+            from_cache=from_cache,
+        )
+
+    def _fetch_live_bundle(self) -> OfficialDataBundle:
+        current_matches = [
+            match
+            for page in self._current_schedule_pages()
+            for match in self._fetch_schedule_page(page)
+        ]
+
+        if not current_matches:
+            raise MatchDataNotFoundError(
+                "Jリーグ公式サイトに試合データがありません。"
             )
+
+        # Eloはシーズンをまたいで引き継ぐため、前シーズン相当も常に取得する。
+        history_matches = [
+            match
+            for page in self._history_schedule_pages()
+            for match in self._fetch_schedule_page(page)
+        ]
+        rankings = self._fetch_rankings()
+        fetched_at = self._reference_time()
+
+        _write_official_results_cache(
+            self.cache_path,
+            season_start_year=self._current_season_start_year(),
+            fetched_at=fetched_at,
+            current_matches=current_matches,
+            history_matches=history_matches,
+            rankings=rankings,
+        )
+
+        return self._create_bundle(
+            current_matches,
+            history_matches,
+            rankings,
+            fetched_at,
+            from_cache=False,
+        )
+
+    def _bundle_from_cache(
+        self,
+        cache: dict[str, Any],
+    ) -> OfficialDataBundle:
+        return self._create_bundle(
+            _deserialize_official_matches(cache.get("current_matches", [])),
+            _deserialize_official_matches(cache.get("history_matches", [])),
+            {
+                str(team_name): int(rank)
+                for team_name, rank in cache.get("rankings", {}).items()
+            },
+            datetime.fromisoformat(cache["fetched_at"]),
+            from_cache=True,
+        )
+
+    def load_bundle(self) -> OfficialDataBundle:
+        """画面用データとElo用履歴を、永続キャッシュ込みで返す。"""
+
+        cache = _read_official_results_cache(
+            self.cache_path,
+            self._current_season_start_year(),
+        )
+        cache_age_seconds = _official_cache_age_seconds(
+            cache,
+            self._reference_time(),
+        )
+
+        if (
+            cache is not None
+            and cache_age_seconds is not None
+            and cache_age_seconds <= self.cache_ttl_seconds
+        ):
+            return self._bundle_from_cache(cache)
+
+        try:
+            return self._fetch_live_bundle()
         except MatchDataSourceError:
+            if (
+                cache is not None
+                and cache_age_seconds is not None
+                and cache_age_seconds <= self.cache_max_stale_seconds
+            ):
+                return self._bundle_from_cache(cache)
             raise
         except (KeyError, TypeError, ValueError) as error:
+            if (
+                cache is not None
+                and cache_age_seconds is not None
+                and cache_age_seconds <= self.cache_max_stale_seconds
+            ):
+                return self._bundle_from_cache(cache)
             raise MatchDataFormatError(
                 "Jリーグ公式データの形式が想定と異なります。"
             ) from error
+
+    def load(self) -> pd.DataFrame:
+        """既存MatchDataSourceインターフェースを維持する。"""
+
+        return self.load_bundle().matches
 
 
 # --------------------------------------------------
@@ -576,7 +833,27 @@ def _parse_score(score_value: Any) -> Optional[tuple[int, int]]:
     return tuple(int(part) for part in score_match.groups())
 
 
+def _parse_competition_category(competition_value: Any) -> str:
+    """公式大会名からJ1・J2・J3または合同カテゴリーを返す。"""
+
+    competition_text = normalize_text(competition_value).upper()
+    includes_j1 = "J1" in competition_text
+    includes_j2 = "J2" in competition_text
+    includes_j3 = "J3" in competition_text
+
+    if includes_j1 and not includes_j2 and not includes_j3:
+        return "J1"
+    if includes_j2 and includes_j3:
+        return "J2/J3"
+    if includes_j2:
+        return "J2"
+    if includes_j3:
+        return "J3"
+    return ""
+
+
 def _parse_schedule_table(table: pd.DataFrame) -> list[OfficialMatch]:
+    competition_column = _find_column(table, "大会")
     date_column = _find_column(table, "試合日")
     kickoff_column = _find_column(table, "K/O時刻")
     home_column = _find_column(table, "ホーム")
@@ -592,7 +869,9 @@ def _parse_schedule_table(table: pd.DataFrame) -> list[OfficialMatch]:
         home_team = translate_official_team_name(row.get(home_column, ""))
         away_team = translate_official_team_name(row.get(away_column, ""))
 
-        if home_team not in ALL_TEAM_NAME_SET or away_team not in ALL_TEAM_NAME_SET:
+        # 前シーズンにJリーグを離れたクラブとの結果も、現所属クラブの
+        # Elo引継ぎには必要。両方とも現行60クラブ外の試合だけ除外する。
+        if home_team not in ALL_TEAM_NAME_SET and away_team not in ALL_TEAM_NAME_SET:
             continue
 
         try:
@@ -613,6 +892,11 @@ def _parse_schedule_table(table: pd.DataFrame) -> list[OfficialMatch]:
                 away_team=away_team,
                 home_goals=home_goals,
                 away_goals=away_goals,
+                category=_parse_competition_category(
+                    row.get(competition_column, "")
+                    if competition_column is not None
+                    else ""
+                ),
             )
         )
 
@@ -650,6 +934,7 @@ def _match_identity(match: OfficialMatch) -> tuple[Any, ...]:
         match.away_team,
         match.home_goals,
         match.away_goals,
+        match.category,
     )
 
 
@@ -877,6 +1162,10 @@ class MatchDataLoadResult:
     status: str
     message: str
     team_stats: dict[str, TeamRecentStats] = field(default_factory=dict)
+    completed_matches: tuple[OfficialMatch, ...] = ()
+    data_start_date: Optional[date] = None
+    data_end_date: Optional[date] = None
+    official_cache_used: bool = False
 
     @property
     def is_loaded(self) -> bool:
@@ -1080,7 +1369,22 @@ def _load_single_source(source: MatchDataSource) -> MatchDataLoadResult:
     """1取得元を読み込み、例外を画面用の安全な結果へ変換する。"""
 
     try:
-        raw_matches = source.load()
+        bundle_loader = getattr(source, "load_bundle", None)
+
+        if callable(bundle_loader):
+            bundle = bundle_loader()
+            raw_matches = bundle.matches
+            completed_matches = tuple(bundle.completed_matches)
+            data_start_date = bundle.data_start_date
+            data_end_date = bundle.data_end_date
+            official_cache_used = bool(bundle.from_cache)
+        else:
+            raw_matches = source.load()
+            completed_matches = ()
+            data_start_date = None
+            data_end_date = None
+            official_cache_used = False
+
         team_stats = extract_team_stats(raw_matches)
         matches = normalize_matches(raw_matches)
     except MatchDataNotFoundError:
@@ -1107,7 +1411,7 @@ def _load_single_source(source: MatchDataSource) -> MatchDataLoadResult:
             message="データを取得できませんでした。",
         )
 
-    if matches.empty:
+    if matches.empty and not completed_matches:
         return MatchDataLoadResult(
             matches=matches,
             source_name=source.name,
@@ -1116,12 +1420,32 @@ def _load_single_source(source: MatchDataSource) -> MatchDataLoadResult:
             team_stats=team_stats,
         )
 
+    if matches.empty:
+        return MatchDataLoadResult(
+            matches=matches,
+            source_name=source.name,
+            status="loaded",
+            message=(
+                f"{source.name}の試合履歴を読み込みました。"
+                "対戦カードは手入力できます。"
+            ),
+            team_stats=team_stats,
+            completed_matches=completed_matches,
+            data_start_date=data_start_date,
+            data_end_date=data_end_date,
+            official_cache_used=official_cache_used,
+        )
+
     return MatchDataLoadResult(
         matches=matches,
         source_name=source.name,
         status="loaded",
         message=f"{source.name}から{len(matches)}試合を読み込みました。",
         team_stats=team_stats,
+        completed_matches=completed_matches,
+        data_start_date=data_start_date,
+        data_end_date=data_end_date,
+        official_cache_used=official_cache_used,
     )
 
 
