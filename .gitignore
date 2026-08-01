@@ -1,0 +1,6 @@
+# Pythonが実行時に自動生成するキャッシュ
+__pycache__/
+*.py[cod]
+
+# テストツールが自動生成するキャッシュ
+.pytest_cache/

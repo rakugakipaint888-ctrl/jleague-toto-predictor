@@ -3,6 +3,7 @@ import math
 import pandas as pd
 import streamlit as st
 
+from data_loader import get_match_defaults, load_matches
 from teams import TEAM_OPTIONS, format_team_option
 
 
@@ -222,6 +223,19 @@ def create_reason(
     )
 
 
+def get_team_option_index(team_name: str):
+    """CSVのクラブ名に対応するプルダウン位置を返す。"""
+
+    for option_index, (_, option_team_name) in enumerate(
+        TEAM_OPTIONS
+    ):
+        if option_team_name == team_name:
+            return option_index
+
+    # CSVに未登録のクラブ名があっても、未選択として安全に表示する。
+    return None
+
+
 # --------------------------------------------------
 # 画面
 # --------------------------------------------------
@@ -234,9 +248,20 @@ st.caption(
 )
 
 st.warning(
-    "このアプリはVersion 1の試作モデルです。"
+    "このアプリはVersion 2の試作モデルです。"
     "的中や利益を保証するものではありません。"
 )
+
+# app.pyは保存場所を直接扱わず、data_loader.pyから受け取る。
+# CSVがない場合も空データが返るため、手入力でそのまま利用できる。
+match_data_result = load_matches()
+
+if match_data_result.is_loaded:
+    st.success(match_data_result.message)
+elif match_data_result.status == "error":
+    st.warning(match_data_result.message)
+else:
+    st.info(match_data_result.message)
 
 with st.expander("入力方法を見る"):
     st.write(
@@ -262,10 +287,17 @@ with st.form("prediction_form"):
 
         st.subheader(f"第{match_number}試合")
 
+        match_defaults = get_match_defaults(
+            match_data_result.matches,
+            match_number,
+        )
+
         selected_home_team = st.selectbox(
             "ホームチーム",
             options=TEAM_OPTIONS,
-            index=None,
+            index=get_team_option_index(
+                match_defaults["home_team"]
+            ),
             format_func=format_team_option,
             placeholder="カテゴリーからチームを選択",
             key=f"home_team_{match_number}",
@@ -274,7 +306,9 @@ with st.form("prediction_form"):
         selected_away_team = st.selectbox(
             "アウェイチーム",
             options=TEAM_OPTIONS,
-            index=None,
+            index=get_team_option_index(
+                match_defaults["away_team"]
+            ),
             format_func=format_team_option,
             placeholder="カテゴリーからチームを選択",
             key=f"away_team_{match_number}",
@@ -303,7 +337,7 @@ with st.form("prediction_form"):
                 "平均得点",
                 min_value=0.0,
                 max_value=5.0,
-                value=1.4,
+                value=float(match_defaults["home_scored"]),
                 step=0.1,
                 key=f"home_scored_{match_number}",
             )
@@ -312,7 +346,7 @@ with st.form("prediction_form"):
                 "平均失点",
                 min_value=0.0,
                 max_value=5.0,
-                value=1.2,
+                value=float(match_defaults["home_conceded"]),
                 step=0.1,
                 key=f"home_conceded_{match_number}",
             )
@@ -324,7 +358,7 @@ with st.form("prediction_form"):
                 "平均得点",
                 min_value=0.0,
                 max_value=5.0,
-                value=1.2,
+                value=float(match_defaults["away_scored"]),
                 step=0.1,
                 key=f"away_scored_{match_number}",
             )
@@ -333,7 +367,7 @@ with st.form("prediction_form"):
                 "平均失点",
                 min_value=0.0,
                 max_value=5.0,
-                value=1.4,
+                value=float(match_defaults["away_conceded"]),
                 step=0.1,
                 key=f"away_conceded_{match_number}",
             )
