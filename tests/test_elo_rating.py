@@ -2,11 +2,20 @@
 
 import tempfile
 import unittest
+import subprocess
+import sys
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from config import DEFAULT_ELO_SETTINGS
+from config import (
+    CATEGORY_BONUS,
+    DEFAULT_ELO_SETTINGS,
+    HOME_ADVANTAGE,
+    INITIAL_ELO,
+    K_FACTOR,
+    LEAGUE_INITIAL_ELO,
+)
 from elo_rating import (
     adjust_expected_goals,
     calculate_expected_score,
@@ -24,6 +33,7 @@ TEAM_CATEGORIES = {
     "ベガルタ仙台": "J2",
     "モンテディオ山形": "J2",
 }
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def completed_match(
@@ -98,6 +108,76 @@ class EloFormulaTest(unittest.TestCase):
         self.assertAlmostEqual(positive.away_after, 0.85)
         self.assertAlmostEqual(negative.home_after, 1.70)
         self.assertAlmostEqual(negative.away_after, 1.15)
+
+
+class EloArchitectureTest(unittest.TestCase):
+    def test_elo_settings_are_isolated_in_config(self) -> None:
+        self.assertEqual(INITIAL_ELO, 1500.0)
+        self.assertEqual(K_FACTOR, 20.0)
+        self.assertEqual(HOME_ADVANTAGE, 65.0)
+        self.assertEqual(
+            CATEGORY_BONUS,
+            {"J1": 0.0, "J2": -50.0, "J3": -100.0},
+        )
+        self.assertEqual(
+            LEAGUE_INITIAL_ELO,
+            {"J1": 1500.0, "J2": 1450.0, "J3": 1400.0},
+        )
+
+    def test_elo_rating_import_does_not_load_teams_module(self) -> None:
+        script = """
+import sys
+
+class BlockTeamsImport:
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == 'teams':
+            raise ImportError('elo_rating must not import teams')
+        return None
+
+sys.meta_path.insert(0, BlockTeamsImport())
+from elo_rating import calculate_expected_score
+assert calculate_expected_score(1500, 1500) == 0.5
+assert 'teams' not in sys.modules
+"""
+        completed = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(
+            completed.returncode,
+            0,
+            msg=completed.stdout + completed.stderr,
+        )
+
+    def test_team_name_normalization_is_injected_by_caller(self) -> None:
+        now = datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
+        aliases = {
+            "鹿島": "鹿島アントラーズ",
+            "浦和": "浦和レッズ",
+        }
+
+        result = generate_elo_ratings(
+            [
+                completed_match(
+                    now - timedelta(days=1),
+                    home_team="鹿島",
+                    away_team="浦和",
+                )
+            ],
+            TEAM_CATEGORIES,
+            as_of=now,
+            team_name_normalizer=lambda value: aliases.get(value, str(value)),
+        )
+
+        self.assertEqual(result.processed_match_count, 1)
+        self.assertGreater(
+            result.ratings["鹿島アントラーズ"].rating,
+            1500,
+        )
 
 
 class EloHistoryAndCacheTest(unittest.TestCase):

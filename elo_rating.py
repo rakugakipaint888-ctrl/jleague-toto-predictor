@@ -8,14 +8,29 @@ import os
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Optional, Sequence
+from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
 from config import DEFAULT_ELO_SETTINGS, ELO_CACHE_VERSION, EloSettings
-from teams import TEAM_CATEGORY_BY_NAME, normalize_team_name
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_ELO_CACHE_PATH = PROJECT_ROOT / "data" / "cache" / "elo_ratings.json"
+TeamNameNormalizer = Callable[[Any], str]
+
+
+def _default_team_name_normalizer(value: Any) -> str:
+    """Elo単体利用時の最小限の入力整形を行う。"""
+
+    if value is None:
+        return ""
+
+    try:
+        if value != value:  # NaN相当
+            return ""
+    except (TypeError, ValueError):
+        pass
+
+    return str(value).strip()
 
 
 @dataclass(frozen=True)
@@ -233,14 +248,15 @@ def _normalize_category(value: Any) -> str:
 def _prepare_matches(
     matches: Iterable[Any],
     as_of: Optional[datetime] = None,
+    team_name_normalizer: TeamNameNormalizer = _default_team_name_normalizer,
 ) -> list[_PreparedMatch]:
     reference_time = _as_datetime(as_of or datetime.now(timezone.utc))
     prepared_matches = []
 
     for match in matches:
         match_time = _as_datetime(_match_value(match, "match_time"))
-        home_team = normalize_team_name(_match_value(match, "home_team"))
-        away_team = normalize_team_name(_match_value(match, "away_team"))
+        home_team = team_name_normalizer(_match_value(match, "home_team"))
+        away_team = team_name_normalizer(_match_value(match, "away_team"))
         home_goals = _match_value(match, "home_goals")
         away_goals = _match_value(match, "away_goals")
 
@@ -287,6 +303,36 @@ def _prepare_matches(
     )
 
 
+def _prepare_team_categories(
+    team_categories: Optional[Mapping[str, str]],
+    prepared_matches: Sequence[_PreparedMatch],
+    team_name_normalizer: TeamNameNormalizer,
+) -> dict[str, str]:
+    """呼び出し元のクラブ構成をElo内部の入力形式へそろえる。"""
+
+    if team_categories is not None:
+        normalized_categories = {}
+
+        for team_name, category in team_categories.items():
+            normalized_name = team_name_normalizer(team_name)
+
+            if normalized_name:
+                normalized_categories[normalized_name] = (
+                    _normalize_category(category) or str(category)
+                )
+
+        return normalized_categories
+
+    # 単体利用では、履歴に含まれるクラブと最新カテゴリーから構成を作る。
+    derived_categories = {}
+
+    for match in prepared_matches:
+        derived_categories[match.home_team] = match.category
+        derived_categories[match.away_team] = match.category
+
+    return derived_categories
+
+
 def _settings_fingerprint(
     settings: EloSettings,
     team_categories: Mapping[str, str],
@@ -323,8 +369,7 @@ def _initial_state(
     match_counts = {}
     last_updated = {}
 
-    for team_name, current_category in team_categories.items():
-        canonical_name = normalize_team_name(team_name)
+    for canonical_name, current_category in team_categories.items():
         initial_category = _initial_category_for_team(
             canonical_name,
             matches,
@@ -437,8 +482,7 @@ def _result_from_state(
 ) -> EloCalculationResult:
     public_ratings = {}
 
-    for team_name, category in team_categories.items():
-        canonical_name = normalize_team_name(team_name)
+    for canonical_name, category in team_categories.items():
         updated_text = last_updated.get(canonical_name)
         public_ratings[canonical_name] = EloTeamRating(
             team_name=canonical_name,
@@ -472,16 +516,26 @@ def _result_from_state(
 
 def generate_elo_ratings(
     matches: Iterable[Any],
-    team_categories: Mapping[str, str] = TEAM_CATEGORY_BY_NAME,
+    team_categories: Optional[Mapping[str, str]] = None,
     settings: EloSettings = DEFAULT_ELO_SETTINGS,
     as_of: Optional[datetime] = None,
+    team_name_normalizer: TeamNameNormalizer = _default_team_name_normalizer,
 ) -> EloCalculationResult:
     """キャッシュを使わず全対象試合からEloを生成する。"""
 
-    prepared_matches = _prepare_matches(matches, as_of)
+    prepared_matches = _prepare_matches(
+        matches,
+        as_of,
+        team_name_normalizer,
+    )
+    prepared_team_categories = _prepare_team_categories(
+        team_categories,
+        prepared_matches,
+        team_name_normalizer,
+    )
     ratings, match_counts, last_updated = _initial_state(
         prepared_matches,
-        team_categories,
+        prepared_team_categories,
         settings,
     )
     _apply_matches(
@@ -489,7 +543,7 @@ def generate_elo_ratings(
         ratings,
         match_counts,
         last_updated,
-        team_categories,
+        prepared_team_categories,
         settings,
     )
     return _result_from_state(
@@ -497,7 +551,7 @@ def generate_elo_ratings(
         ratings,
         match_counts,
         last_updated,
-        team_categories,
+        prepared_team_categories,
         from_cache=False,
         incremental_match_count=len(prepared_matches),
     )
@@ -505,17 +559,27 @@ def generate_elo_ratings(
 
 def load_or_calculate_elo(
     matches: Iterable[Any],
-    team_categories: Mapping[str, str] = TEAM_CATEGORY_BY_NAME,
+    team_categories: Optional[Mapping[str, str]] = None,
     settings: EloSettings = DEFAULT_ELO_SETTINGS,
     cache_path: Optional[Path] = None,
     as_of: Optional[datetime] = None,
+    team_name_normalizer: TeamNameNormalizer = _default_team_name_normalizer,
 ) -> EloCalculationResult:
     """同じ履歴はキャッシュを返し、追加入力時は新規試合だけを更新する。"""
 
-    prepared_matches = _prepare_matches(matches, as_of)
+    prepared_matches = _prepare_matches(
+        matches,
+        as_of,
+        team_name_normalizer,
+    )
+    prepared_team_categories = _prepare_team_categories(
+        team_categories,
+        prepared_matches,
+        team_name_normalizer,
+    )
     cache_path = cache_path or get_elo_cache_path()
     current_match_ids = [match.identity for match in prepared_matches]
-    fingerprint = _settings_fingerprint(settings, team_categories)
+    fingerprint = _settings_fingerprint(settings, prepared_team_categories)
     cache = _read_cache(cache_path)
 
     can_increment = bool(
@@ -544,10 +608,7 @@ def load_or_calculate_elo(
             can_increment = False
 
         if can_increment:
-            required_teams = {
-                normalize_team_name(team_name)
-                for team_name in team_categories
-            }
+            required_teams = set(prepared_team_categories)
             if not required_teams.issubset(ratings):
                 can_increment = False
 
@@ -563,14 +624,14 @@ def load_or_calculate_elo(
             ratings,
             match_counts,
             last_updated,
-            team_categories,
+            prepared_team_categories,
             settings,
         )
     else:
         processed_count = 0
         ratings, match_counts, last_updated = _initial_state(
             prepared_matches,
-            team_categories,
+            prepared_team_categories,
             settings,
         )
         new_matches = prepared_matches
@@ -579,7 +640,7 @@ def load_or_calculate_elo(
             ratings,
             match_counts,
             last_updated,
-            team_categories,
+            prepared_team_categories,
             settings,
         )
 
@@ -599,7 +660,7 @@ def load_or_calculate_elo(
         ratings,
         match_counts,
         last_updated,
-        team_categories,
+        prepared_team_categories,
         from_cache=bool(can_increment and not new_matches),
         incremental_match_count=len(new_matches),
     )
@@ -608,9 +669,10 @@ def load_or_calculate_elo(
 def get_team_elo(
     team_name: Any,
     elo_result: EloCalculationResult,
+    team_name_normalizer: TeamNameNormalizer = _default_team_name_normalizer,
 ) -> Optional[float]:
-    """クラブ名を正規化し、現在Eloを返す。"""
+    """呼び出し元の正規化規則でクラブ別Eloを返す。"""
 
-    normalized_name = normalize_team_name(team_name)
+    normalized_name = team_name_normalizer(team_name)
     team_rating = elo_result.ratings.get(normalized_name)
     return team_rating.rating if team_rating else None

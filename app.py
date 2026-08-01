@@ -25,6 +25,7 @@ from teams import (
     TEAM_CATEGORY_BY_NAME,
     TEAM_OPTIONS,
     format_team_option,
+    normalize_team_name,
 )
 
 
@@ -72,6 +73,7 @@ def load_elo_data(completed_matches):
         completed_matches,
         team_categories=TEAM_CATEGORY_BY_NAME,
         cache_path=get_elo_cache_path(),
+        team_name_normalizer=normalize_team_name,
     )
 
 
@@ -484,12 +486,20 @@ for match_number in range(1, 14):
     )
 
     home_elo = (
-        get_team_elo(home_team, elo_result)
+        get_team_elo(
+            home_team,
+            elo_result,
+            team_name_normalizer=normalize_team_name,
+        )
         if elo_available
         else None
     )
     away_elo = (
-        get_team_elo(away_team, elo_result)
+        get_team_elo(
+            away_team,
+            elo_result,
+            team_name_normalizer=normalize_team_name,
+        )
         if elo_available
         else None
     )

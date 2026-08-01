@@ -75,7 +75,9 @@ Jリーグ公式サイトの[著作権について](https://www.jleague.jp/gener
 
 ## Elo計算仕様
 
-設定は[`config.py`](config.py)の`EloSettings`へ集約しています。
+設定は[`config.py`](config.py)の`EloSettings`と、`INITIAL_ELO`、
+`CATEGORY_BONUS`、`LEAGUE_INITIAL_ELO`、`K_FACTOR`、`HOME_ADVANTAGE`等の
+明示定数へ集約しています。`teams.py`にはElo設定を置きません。
 
 ### 初期値
 
@@ -182,6 +184,17 @@ Eloに必要な完了試合履歴を利用できない場合は、アプリを�
 ```text
 Eloデータを取得できないため、Elo補正なしで計算しました。
 ```
+
+## モジュール構成
+
+- `teams.py`：J1・J2・J3のクラブ情報、名称正規化、プルダウン用データ
+- `config.py`：Eloとキャッシュの設定値
+- `elo_rating.py`：Elo計算、期待得点補正、Eloキャッシュ
+- `app.py`：各モジュールを接続するStreamlit画面
+
+`elo_rating.py`は`teams.py`をimportしません。クラブ構成と名称正規化関数は
+`app.py`から引数で渡すため、Elo計算モジュールを単体でimportでき、循環importも
+発生しない構成です。
 
 ## CSV
 
