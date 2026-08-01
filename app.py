@@ -13,6 +13,7 @@ from elo_rating import (
     get_team_elo,
     load_or_calculate_elo,
 )
+from model_config import OFFICIAL_RESULTS_CACHE_VERSION
 from model_pipeline import (
     ModelOptions,
     TeamModelInput,
@@ -60,9 +61,12 @@ def get_team_option_index(team_name: str):
 
 
 @st.cache_data(ttl=6 * 60 * 60, show_spinner=False)
-def load_match_data():
-    """公式サイトへのアクセスを抑えるため6時間キャッシュする。"""
+def load_match_data(
+    cache_version: int = OFFICIAL_RESULTS_CACHE_VERSION,
+):
+    """スキーマ版をキーに含めて公式データを6時間キャッシュする。"""
 
+    _ = cache_version
     return load_matches()
 
 
@@ -526,7 +530,7 @@ st.warning(
 
 # app.pyは取得元を直接扱わず、data_loader.pyから共通形式で受け取る。
 # 公式データとCSVが利用できなくても空データが返り、手入力で利用できる。
-match_data_result = load_match_data()
+match_data_result = load_match_data(OFFICIAL_RESULTS_CACHE_VERSION)
 
 if match_data_result.is_loaded:
     st.success(match_data_result.message)

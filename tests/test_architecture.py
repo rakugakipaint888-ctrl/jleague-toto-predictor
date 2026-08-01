@@ -75,6 +75,7 @@ class ArchitectureTest(unittest.TestCase):
 
     def test_runtime_modules_do_not_import_legacy_config_name(self) -> None:
         runtime_modules = (
+            "app.py",
             "data_loader.py",
             "elo_rating.py",
             "form_adjuster.py",

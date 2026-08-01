@@ -2141,7 +2141,7 @@ def get_match_defaults(matches: pd.DataFrame, match_number: int) -> dict:
         **DEFAULT_MATCH_DETAILS,
     }
 
-    if matches.empty:
+    if matches.empty or "match_number" not in matches.columns:
         return defaults
 
     selected_match = matches.loc[matches["match_number"] == match_number]
@@ -2156,6 +2156,8 @@ def get_match_defaults(matches: pd.DataFrame, match_number: int) -> dict:
         *DEFAULT_MATCH_VALUES,
         *DEFAULT_MATCH_DETAILS,
     ):
-        defaults[column] = match_values[column]
+        # Streamlitの旧メモリキャッシュにVersion4までのDataFrameが残っても、
+        # Version5で追加した列は既定値へ安全にフォールバックする。
+        defaults[column] = match_values.get(column, defaults[column])
 
     return defaults

@@ -145,6 +145,37 @@ class DataLoaderTest(unittest.TestCase):
         self.assertEqual(defaults["match_date"], "2026-08-07")
         self.assertIsNone(defaults["home_rank"])
 
+    def test_version4_memory_cache_missing_version5_columns_is_safe(self) -> None:
+        cached_matches = pd.DataFrame(
+            [
+                {
+                    "match_number": 1,
+                    "match_date": "2026-08-07",
+                    "home_team": "鹿島アントラーズ",
+                    "away_team": "浦和レッズ",
+                    "home_scored": 1.8,
+                    "home_conceded": 0.8,
+                    "away_scored": 1.2,
+                    "away_conceded": 1.4,
+                    "home_recent_matches": "",
+                    "away_recent_matches": "",
+                    "home_rank": 2,
+                    "away_rank": 6,
+                    "home_played": 10,
+                    "away_played": 10,
+                }
+            ]
+        )
+
+        defaults = get_match_defaults(cached_matches, 1)
+
+        self.assertEqual(defaults["home_team"], "鹿島アントラーズ")
+        self.assertEqual(defaults["home_rank"], 2)
+        self.assertIsNone(defaults["home_points"])
+        self.assertIsNone(defaults["away_goal_difference"])
+        self.assertEqual(defaults["home_season_played"], 0)
+        self.assertEqual(defaults["home_played"], 10)
+
     def test_csv_detail_fields_are_loaded(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:
             csv_path = Path(temp_directory) / "matches.csv"
