@@ -3,6 +3,8 @@ import math
 import pandas as pd
 import streamlit as st
 
+from teams import TEAM_OPTIONS, format_team_option
+
 
 # --------------------------------------------------
 # 基本設定
@@ -260,16 +262,36 @@ with st.form("prediction_form"):
 
         st.subheader(f"第{match_number}試合")
 
-        home_team = st.text_input(
+        selected_home_team = st.selectbox(
             "ホームチーム",
-            value=f"ホーム{match_number}",
+            options=TEAM_OPTIONS,
+            index=None,
+            format_func=format_team_option,
+            placeholder="カテゴリーからチームを選択",
             key=f"home_team_{match_number}",
         )
 
-        away_team = st.text_input(
+        selected_away_team = st.selectbox(
             "アウェイチーム",
-            value=f"アウェイ{match_number}",
+            options=TEAM_OPTIONS,
+            index=None,
+            format_func=format_team_option,
+            placeholder="カテゴリーからチームを選択",
             key=f"away_team_{match_number}",
+        )
+
+        # 選択肢は（カテゴリー、クラブ名）の組。
+        # 計算結果やCSVには、従来どおりクラブ名だけを渡す。
+        home_team = (
+            selected_home_team[1]
+            if selected_home_team
+            else ""
+        )
+
+        away_team = (
+            selected_away_team[1]
+            if selected_away_team
+            else ""
         )
 
         col1, col2 = st.columns(2)
