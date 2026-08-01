@@ -43,16 +43,21 @@ match_number,match_date,home_team,away_team,home_scored,home_conceded,away_score
 順位表・会場別成績の列はすべて省略可能で、従来形式との互換性があります。
 シーズン試合数、勝点、得失点差のいずれかがない場合、順位等補正は適用しません。
 
-## 実行時キャッシュ
+## 実行時キャッシュと履歴
 
-Version5は`data/cache/`を自動作成し、次のJSONを保存します。
+Version6は`data/cache/`と`data/history/`を自動作成し、次を保存します。
 
 - `official_match_results.json`：現行・前シーズン相当の試合結果、順位表、
   直近5試合、シーズン・会場別クラブ成績
 - `elo_ratings.json`：処理済み試合ID、全クラブElo、試合数、最終更新日
+- `toto_rounds.csv`：開催回、第1～13試合、試合日時、実結果、公式配当
+- `../history/prediction_history.csv`：開催回・試合番号・Version別の予想履歴と
+  的中率、Brier Score、Log Loss、Calibration、的中期待値、ROI
 
-これらは入力CSVではなく再計算を減らすための内部ファイルです。Git管理対象外で、
-削除しても次回の公式取得・Elo計算時に再生成されます。
+これらは入力CSVではなく、取得失敗時の継続と検証履歴のための実行時ファイルです。
+Git管理対象外です。`toto_rounds.csv`は公式→保存CSV→現在データ→エラー表示の
+フォールバックで使います。`prediction_history.csv`を削除すると累積分析履歴も
+失われるため、必要に応じて分析タブのダウンロードボタンから保存してください。
 
 ## 予想結果CSVのVersion4追加列
 
@@ -75,3 +80,20 @@ Elo履歴を取得できない場合、Elo値は空欄、補正前後の期待�
 Version4までの列を残したまま、順位表、通常・加重直近平均、会場別平均、
 Version4／Version5期待得点、補正状態、本命差分を追加します。列名の全一覧は
 ルートの[`README.md`](../README.md)を参照してください。
+
+## 予想結果CSVのVersion6追加列
+
+Version5までの列を残したまま、次の列を追加します。
+
+- `toto_round`
+- `toto_match_number`
+- `prediction_version`
+- `actual_result`
+- `hit`
+- `total_hits`
+- `accuracy`
+- `prediction_date`
+
+入力、予想一覧、Version比較、試合詳細、予想結果CSV、予想履歴CSVはすべて
+スポーツくじ公式の第1～13試合順です。公式試合順を取得できない場合だけ、
+保存済み開催回CSV、現在のJリーグ試合データの順でフォールバックします。

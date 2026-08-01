@@ -10,3 +10,6 @@ __pycache__/
 
 # 公式試合履歴・計算済みEloの実行時キャッシュ
 data/cache/
+
+# Version6の開催回別予想履歴
+data/history/

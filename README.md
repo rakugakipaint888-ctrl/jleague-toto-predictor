@@ -11,7 +11,7 @@ J1・J2・J3の試合を対象に、直近成績、会場別成績、順位表�
 ## 現在の機能
 
 - J1～J3、全60クラブのカテゴリー付きチーム選択
-- 13試合の入力・予想
+- toto公式の開催回と第1～13試合順による13試合の入力・予想
 - Jリーグ公式データの自動取得
 - 直近5試合、平均得点、平均失点の自動計算・自動入力
 - 直近5試合の時系列重み付け（最新順に5・4・3・2・1）
@@ -23,10 +23,80 @@ J1・J2・J3の試合を対象に、直近成績、会場別成績、順位表�
 - Elo差による期待得点補正とON/OFF切替
 - カテゴリー内順位付きElo一覧とElo順の並べ替え
 - 本命、信頼度、予想スコア、予想理由の表示
-- CSV読込と予想結果CSV保存
-- Version4相当とVersion5の13試合比較表示
+- 開催回をキーにしたVersion4～Version6の予想・実結果履歴CSV
+- 開催日時点より前のデータだけを使うバックテスト
+- 的中率、1・0・2別正答率、Brier Score、Log Loss、Calibration、ROI
+- 開催回別・累積・Version別の表とグラフを備えた分析タブ
+- CSV読込と予想結果・予想履歴CSV保存
+- Version4～Version6の13試合比較表示
 - 公式データ → CSV → 手入力の自動切替
 - 補正別の欠損フォールバックとVersion4予測への最終フォールバック
+
+## Version6
+
+Version6はVersion5の予測式を変更せず、将来のモデル最適化と重み自動調整に
+必要な検証・分析基盤を追加します。そのため同じ入力に対するVersion5と
+Version6の本命、確率、期待得点は同値です。Version7以降でモデルを変更した際に、
+保存済み履歴と同じ条件で差を比較できます。
+
+### toto公式試合順と開催回
+
+- スポーツくじ公式の「第1試合」～「第13試合」を唯一の表示順に使用
+- 開催回、試合番号、ホーム、アウェイ、試合日時、実結果、公式配当を保持
+- 公式の略称は`teams.py`の`normalize_team_name()`で既存クラブ名へ正規化
+- 入力、本命、予想一覧、試合詳細、Version比較、CSV、履歴を同じ順に統一
+- 将来のnote出力も`TotoRound.matches`の公式試合番号順を再利用可能
+- 開催回を履歴、バックテスト、分析のキーとして使用
+
+### 過去開催回とバックテスト
+
+分析タブの「直近1年以上の開催回一覧を取得」で、既定では現在年と前年の
+toto結果一覧を取得します。選択した開催回について、対象13試合、実結果、
+1～3等の公式当せん金を取得します。2026年8月1日の実接続確認では、
+2025年と2026年の計121開催回を一覧化できました。詳細データは選択時に取得し、
+公式コンテンツをリポジトリへ同梱・再配布しません。
+
+バックテストの基準時刻は、対象開催回の最初の試合日の`00:00 JST`です。
+次のデータを基準時刻より前の完了試合だけから再構成します。
+
+- 直近5試合と時系列加重平均
+- シーズン成績、順位、勝点、得失点差
+- ホーム／アウェイ別成績
+- Eloレーティング
+
+開催当日を含む基準時刻以後の試合結果、現在の順位表、現在のクラブ成績、
+現在のEloは入力しません。Jリーグ公式の日程・結果を過去年度単位で取得し、
+日時で切り捨てた後にVersion5パイプラインを実行します。
+
+### 予想履歴と分析
+
+`data/history/prediction_history.csv`へ、1試合・1Versionを1行として保存します。
+同じ開催回・試合番号・Versionを再実行した場合は最新行へ置き換え、分析での
+二重計上を防ぎます。分析タブでは次を表示します。
+
+- 開催回一覧、13試合的中数、全体的中率、累積開催数、累積的中率
+- Version4・Version5・Version6の本命、勝率、期待得点、変更有無
+- 1・0・2別正答率と推移
+- ホーム・引分・アウェイの予測割合と実結果割合
+- 開催回別的中数、累積的中率、Version比較のグラフ
+- Brier Score、Log Loss、Calibration、的中期待値、ROI
+
+### 評価指標の定義
+
+- **的中率**：本命が実結果と一致した試合数 ÷ 実結果がある試合数
+- **1・0・2別正答率**：実結果が各ラベルだった試合のうち、本命も同じだった割合
+- **Brier Score**：1・0・2の多クラス確率について、正解one-hotとの差の二乗和を
+  試合平均した値。範囲は0～2で、小さいほど良い
+- **Log Loss**：実結果へ割り当てた確率の負対数平均。小さいほど良い
+- **Calibration**：本命確率を10区間に分け、平均予測確率と実際の的中率の差を
+  試合数で加重したECE。小さいほど確率の信頼性が高い
+- **ROI**：各Versionの本命13個をtotoシングル1口100円で毎開催購入した想定の
+  `公式払戻額 ÷ 購入額 × 100`。13・12・11的中時だけ各開催回の公式1～3等
+  当せん金を使い、それ未満は払戻0円として累積する
+- **的中期待値**：13試合それぞれの本命確率の合計。Version5との比較に使用
+
+ROIは過去データの機械的な検証値であり、購入や利益を推奨・保証するものでは
+ありません。実結果が未確定の開催回は確率指標とROIの集計対象外です。
 
 ## Version5
 
@@ -93,7 +163,19 @@ Eloを補助情報として期待得点へ反映します。
 
 ## データ取得元
 
-2026年8月1日現在、次のJリーグ公式公開ページを使用しています。
+2026年8月1日現在、次のスポーツくじ公式・Jリーグ公式公開ページを使用しています。
+
+### toto開催回・公式試合順・実結果
+
+- [スポーツくじ公式 totoくじ情報](https://store.toto-dream.com/dcs/subos/screen/pi01/spin000/PGSPIN00001DisptotoLotInfo.form)
+- [スポーツくじ公式 totoくじ結果一覧](https://store.toto-dream.com/dcs/subos/screen/pi04/spin011/PGSPIN01101InitLotResultLsttoto.form)
+- 現在の開催回ページ：開催回、販売期間、結果発表日、第1～13試合、ホーム、
+  アウェイ、開催日、開始予定時刻、競技場
+- 過去結果ページ：開催回、第1～13試合、実結果、スコア、1～3等当せん金
+- 年度別結果一覧：現在年と前年を既定取得範囲とし、複数年を指定可能
+
+HTML解析は`history_manager.py`だけで行い、他のモジュールは開催回と公式試合番号を
+持つ共通オブジェクトを使用します。
 
 ### 日程・試合結果
 
@@ -207,6 +289,15 @@ Elo段階だけを無効にし、直近重み・会場別・順位等の選択�
 
 ## キャッシュと更新条件
 
+### toto開催回・予想履歴
+
+- Streamlitメモリキャッシュ：6時間
+- 開催回保存CSV：`data/cache/toto_rounds.csv`
+- 予想履歴CSV：`data/history/prediction_history.csv`
+- 開催回CSVは公式取得に成功した13試合を開催回単位で置換保存
+- 予想履歴は開催回・公式試合番号・Versionを複合キーとして置換保存
+- 過去開催回の実結果を取得した時点で、的中数と全評価指標を再計算
+
 ### 公式試合結果・順位表・クラブ別成績
 
 - Streamlitメモリキャッシュ：6時間
@@ -231,6 +322,18 @@ Elo段階だけを無効にし、直近重み・会場別・順位等の選択�
 Streamlitキャッシュと`data/cache/`内のJSONを削除してアプリを再起動します。
 
 ## 取得失敗時
+
+toto開催回は次の順でフォールバックし、取得失敗だけでアプリを停止しません。
+
+1. スポーツくじ公式の開催回・13試合
+2. `data/cache/toto_rounds.csv`の保存済み開催回
+3. 起動時に取得済みの現在のJリーグ試合データ
+4. 画面へ取得エラーを表示し、13試合の手入力を継続
+
+過去開催回はスポーツくじ公式の結果ページ、保存済み開催回CSVの順です。
+バックテスト用Jリーグ履歴は公式取得済み履歴へフォールバックします。それでも
+基準日時点の履歴を用意できない場合は、その開催回だけエラー表示し、予想画面と
+保存済み分析は継続します。
 
 通常データは次の順で自動切替します。
 
@@ -267,7 +370,12 @@ Eloデータを取得できないため、Elo補正なしで計算しました�
 - `standings_adjuster.py`：勝点・得失点差補正
 - `model_pipeline.py`：Version4比較とVersion5補正順序の管理
 - `data_loader.py`：公式試合・順位表・クラブ統計の取得とキャッシュ
-- `app.py`：各モジュールを接続するStreamlit画面
+- `history_manager.py`：toto公式開催回・第1～13試合・実結果・保存CSV
+- `prediction_history.py`：開催回・Version別の予想履歴CSV
+- `backtest.py`：開催日時点のデータ再構成とVersion4～Version6再実行
+- `metrics.py`：的中率、Brier Score、Log Loss、Calibration、ROI
+- `analysis.py`：開催回集計、Version比較、分析タブ、グラフ
+- `app.py`：各モジュールを接続する入力・予想画面
 
 `elo_rating.py`は`teams.py`をimportしません。クラブ構成と名称正規化関数は
 `app.py`から引数で渡すため、Elo計算モジュールを単体でimportでき、循環importも
@@ -312,6 +420,21 @@ Version4までの列を削除せず、Version5では次の指定列を追加し�
 - `version5_prediction`
 - `prediction_changed`
 
+Version6ではさらに次の列を予想結果CSVへ追加します。
+
+- `toto_round`
+- `toto_match_number`
+- `prediction_version`
+- `actual_result`
+- `hit`
+- `total_hits`
+- `accuracy`
+- `prediction_date`
+
+予想履歴CSVは上記キーに加え、Versionごとの1・0・2確率、期待得点、
+`brier_score`、`log_loss`、`calibration`、`expected_hits`、`stake_yen`、
+`payout_yen`、`roi`を保存します。すべてtoto公式試合番号順です。
+
 ## フォルダ構成
 
 ```text
@@ -327,11 +450,22 @@ Version4までの列を削除せず、Version5では次の指定列を追加し�
 ├── model_config.py           # Elo・Version5・キャッシュ設定
 ├── config.py                 # Version4までのimport互換用ブリッジ
 ├── data_loader.py            # 公式試合・順位表・クラブ統計キャッシュ
+├── history_manager.py        # toto開催回・公式順・結果・CSVフォールバック
+├── prediction_history.py     # Version別予想履歴CSV
+├── backtest.py               # 時点バックテスト・データリーク防止
+├── metrics.py                # 確率評価指標・ROI
+├── analysis.py               # 分析集計・表・グラフ
 ├── data/
 │   ├── README.md             # matches.csvと実行時キャッシュの仕様
-│   └── cache/                # 実行時に自動生成（Git管理外）
+│   ├── cache/                # 実行時に自動生成（Git管理外）
+│   └── history/              # 予想履歴CSV（Git管理外）
 ├── tests/
 │   ├── test_app.py           # 13試合・画面・Elo・CSV統合テスト
+│   ├── test_history_manager.py # toto公式順・開催回・フォールバック
+│   ├── test_prediction_history.py # 履歴保存・実結果照合
+│   ├── test_backtest.py      # 時点再計算・未来データ除外
+│   ├── test_metrics.py       # Brier・Log Loss・Calibration・ROI
+│   ├── test_analysis.py      # 開催回・累積・Version集計
 │   ├── test_data_loader.py   # 公式取得・履歴キャッシュ・フォールバック
 │   ├── test_elo_rating.py    # Elo式・補正・増分キャッシュ
 │   ├── test_prediction.py    # Version3ポアソン計算の回帰テスト
@@ -365,10 +499,10 @@ python -m unittest discover -s tests -v
 - Version3：Jリーグ公式試合データ自動取得
 - Version4：Eloレーティング導入
 - Version5：直近成績・ホーム／アウェイ成績・順位等補正
-- Version6：引き分け指数・波乱度・おすすめ度
-- Version7：予想履歴・実結果保存・的中率分析
-- Version8：バックテストと重み最適化
-- Version9：独自判断入力・AIコメント
-- Version10：note用原稿出力
+- Version6：toto公式順・開催回・バックテスト・履歴・分析・確率指標・ROI
+- Version7：Optuna等による補正係数・ハイパーパラメータ自動探索
+- Version8：AIによる重み自動調整・モデル改善提案
+- Version9：独自判断入力・AIコメント生成
+- Version10：note記事自動生成
 
 予想は統計モデルによる推定であり、的中や利益を保証しません。

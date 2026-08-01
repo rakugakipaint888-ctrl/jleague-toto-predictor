@@ -945,6 +945,14 @@ class JLeagueOfficialDataSource:
 
         return _parse_schedule_table(schedule_table)
 
+    def fetch_schedule_page(
+        self,
+        page: OfficialSchedulePage,
+    ) -> list[OfficialMatch]:
+        """バックテスト用に、指定した過去年度の日程・結果を取得する。"""
+
+        return self._fetch_schedule_page(page)
+
     def _fetch_standings(self) -> dict[str, StandingsRecord]:
         """順位・勝点・得失点を取得し、失敗カテゴリーだけ欠損とする。"""
 
@@ -2158,6 +2166,12 @@ def get_match_defaults(matches: pd.DataFrame, match_number: int) -> dict:
     ):
         # Streamlitの旧メモリキャッシュにVersion4までのDataFrameが残っても、
         # Version5で追加した列は既定値へ安全にフォールバックする。
-        defaults[column] = match_values.get(column, defaults[column])
+        candidate = match_values.get(column, defaults[column])
+        try:
+            is_missing = bool(pd.isna(candidate))
+        except (TypeError, ValueError):
+            is_missing = False
+        if not is_missing:
+            defaults[column] = candidate
 
     return defaults

@@ -17,11 +17,42 @@ from data_loader import (
     OfficialDataBundle,
     OfficialMatch,
 )
+from history_manager import TotoMatch, TotoRound, TotoRoundLoadResult
 from teams import TEAM_OPTIONS
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TEST_CSV_PATH = PROJECT_ROOT / "data" / "matches.csv"
+
+
+NO_TOTO_ROUND = TotoRoundLoadResult(
+    toto_round=None,
+    source_name="エラー",
+    status="error",
+    message="toto開催回を取得できませんでした。13試合は手入力できます。",
+)
+
+
+def completed_analysis_history() -> pd.DataFrame:
+    rows = []
+    for version in ("Version4", "Version5", "Version6"):
+        for match_number in range(1, 14):
+            actual_result = ("1", "0", "2")[(match_number - 1) % 3]
+            rows.append(
+                {
+                    "toto_round": 1548,
+                    "toto_match_number": match_number,
+                    "prediction_version": version,
+                    "prediction": actual_result,
+                    "actual_result": actual_result,
+                    "probability_1": 0.6 if actual_result == "1" else 0.2,
+                    "probability_0": 0.6 if actual_result == "0" else 0.2,
+                    "probability_2": 0.6 if actual_result == "2" else 0.2,
+                    "stake_yen": 100,
+                    "payout_yen": 0,
+                }
+            )
+    return pd.DataFrame(rows)
 
 
 class StreamlitAppTest(unittest.TestCase):
@@ -52,6 +83,16 @@ class StreamlitAppTest(unittest.TestCase):
             return_value=(CsvMatchDataSource(TEST_CSV_PATH),),
         )
         self.source_patcher.start()
+        self.toto_patcher = patch(
+            "history_manager.TotoHistoryManager.load_current_round",
+            return_value=NO_TOTO_ROUND,
+        )
+        self.toto_patcher.start()
+        self.history_patcher = patch(
+            "prediction_history.PredictionHistoryManager.load",
+            return_value=pd.DataFrame(),
+        )
+        self.history_patcher.start()
         self.temp_directory = tempfile.TemporaryDirectory()
         self.environment_patcher = patch.dict(
             os.environ,
@@ -65,6 +106,8 @@ class StreamlitAppTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.source_patcher.stop()
+        self.toto_patcher.stop()
+        self.history_patcher.stop()
         self.environment_patcher.stop()
         self.temp_directory.cleanup()
         TEST_CSV_PATH.unlink(missing_ok=True)
@@ -75,8 +118,9 @@ class StreamlitAppTest(unittest.TestCase):
 
         self.assertEqual(len(app.exception), 0)
         self.assertEqual(len(app.error), 0)
+        self.assertEqual([tab.label for tab in app.tabs], ["予想", "分析"])
         self.assertEqual(len(app.selectbox), 26)
-        self.assertEqual(len(app.number_input), 52)
+        self.assertEqual(len(app.number_input), 53)
         self.assertEqual(len(app.toggle), 5)
         self.assertEqual(app.number_input[0].value, 2.0)
         self.assertEqual(app.number_input[1].value, 0.8)
@@ -91,7 +135,7 @@ class StreamlitAppTest(unittest.TestCase):
         )
         self.assertTrue(
             any(
-                "試合日：2026-08-07" in caption.value
+                "試合日時：2026-08-07" in caption.value
                 for caption in app.caption
             )
         )
@@ -150,6 +194,14 @@ class StreamlitAppTest(unittest.TestCase):
 
         result_df = app.session_state["latest_prediction_results"]
         expected_csv_columns = {
+            "toto_round",
+            "toto_match_number",
+            "prediction_version",
+            "actual_result",
+            "hit",
+            "total_hits",
+            "accuracy",
+            "prediction_date",
             "home_elo",
             "away_elo",
             "elo_difference",
@@ -199,6 +251,98 @@ class StreamlitAppTest(unittest.TestCase):
         )
         self.assertFalse(result_df["elo_adjustment_enabled"].any())
 
+    def test_toto_round_controls_input_result_and_csv_order(self) -> None:
+        team_names = [team_name for _, team_name in TEAM_OPTIONS]
+        official_cards = [
+            (team_names[(12 - index) * 2], team_names[(12 - index) * 2 + 1])
+            for index in range(13)
+        ]
+        kickoff = datetime(2026, 8, 8, 14, 0, tzinfo=JAPAN_TIMEZONE)
+        toto_round = TotoRound(
+            round_id=1644,
+            matches=tuple(
+                TotoMatch(
+                    round_id=1644,
+                    match_number=index,
+                    home_team=home_team,
+                    away_team=away_team,
+                    match_time=kickoff + timedelta(minutes=index),
+                )
+                for index, (home_team, away_team) in enumerate(
+                    official_cards,
+                    start=1,
+                )
+            ),
+        )
+        loaded_round = TotoRoundLoadResult(
+            toto_round=toto_round,
+            source_name="toto公式",
+            status="loaded",
+            message="toto公式順を読み込みました。",
+        )
+
+        with patch(
+            "history_manager.TotoHistoryManager.load_current_round",
+            return_value=loaded_round,
+        ), patch(
+            "prediction_history.PredictionHistoryManager.save_prediction_results",
+            return_value=True,
+        ):
+            app = AppTest.from_file(str(PROJECT_ROOT / "app.py")).run(timeout=20)
+            team_selectboxes = [
+                selectbox
+                for selectbox in app.selectbox
+                if str(selectbox.key).startswith(("home_team_", "away_team_"))
+            ]
+            displayed_cards = [
+                (
+                    team_selectboxes[index * 2].value[1],
+                    team_selectboxes[index * 2 + 1].value[1],
+                )
+                for index in range(13)
+            ]
+            self.assertEqual(displayed_cards, official_cards)
+
+            app.button[0].click()
+            app.run(timeout=20)
+
+        self.assertEqual(len(app.exception), 0)
+        result_df = app.session_state["latest_prediction_results"]
+        self.assertEqual(result_df["toto_match_number"].tolist(), list(range(1, 14)))
+        self.assertEqual(result_df["toto_round"].tolist(), [1644] * 13)
+        self.assertEqual(result_df["prediction_version"].tolist(), ["Version6"] * 13)
+        self.assertEqual(
+            result_df["対戦カード"].tolist(),
+            [f"{home} vs {away}" for home, away in official_cards],
+        )
+
+    def test_analysis_tab_renders_tables_metrics_and_all_graphs(self) -> None:
+        with patch(
+            "prediction_history.PredictionHistoryManager.load",
+            return_value=completed_analysis_history(),
+        ):
+            app = AppTest.from_file(str(PROJECT_ROOT / "app.py")).run(timeout=20)
+
+        self.assertEqual(len(app.exception), 0)
+        self.assertEqual(len(app.error), 0)
+        self.assertEqual([tab.label for tab in app.tabs], ["予想", "分析"])
+        self.assertEqual(len(app.metric), 4)
+        self.assertEqual(len(app.get("vega_lite_chart")), 5)
+        self.assertEqual(len(app.dataframe), 3)
+        analysis_subheaders = {item.value for item in app.subheader}
+        self.assertTrue(
+            {
+                "開催回一覧",
+                "Version比較",
+                "開催回別的中数",
+                "累積的中率",
+                "Version比較（Brier Score）",
+                "1・0・2別正答率の推移",
+                "ホーム・引分・アウェイ予測割合",
+                "Calibration",
+            }.issubset(analysis_subheaders)
+        )
+
     def test_rank_and_venue_record_can_be_edited(self) -> None:
         app = AppTest.from_file(str(PROJECT_ROOT / "app.py")).run(timeout=20)
 
@@ -213,7 +357,7 @@ class StreamlitAppTest(unittest.TestCase):
         self.assertEqual(len(app.exception), 0)
         self.assertEqual(len(app.selectbox), 27)
         # 52平均値 + 順位表18 + 会場別10
-        self.assertEqual(len(app.number_input), 80)
+        self.assertEqual(len(app.number_input), 81)
 
         rank_input = next(
             item
@@ -248,14 +392,20 @@ class StreamlitManualFallbackTest(unittest.TestCase):
         with patch(
             "data_loader.get_default_data_sources",
             return_value=(missing_csv,),
+        ), patch(
+            "history_manager.TotoHistoryManager.load_current_round",
+            return_value=NO_TOTO_ROUND,
+        ), patch(
+            "prediction_history.PredictionHistoryManager.load",
+            return_value=pd.DataFrame(),
         ):
             app = AppTest.from_file(str(PROJECT_ROOT / "app.py")).run(timeout=20)
 
         self.assertEqual(len(app.exception), 0)
         self.assertEqual(len(app.error), 0)
-        self.assertEqual(
+        self.assertIn(
+            "手入力モードで起動しました。",
             [message.value for message in app.info],
-            ["手入力モードで起動しました。"],
         )
         self.assertTrue(
             any(
@@ -371,9 +521,21 @@ class StreamlitEloIntegrationTest(unittest.TestCase):
             return_value=(OfficialBundleSource(matches, now),),
         )
         self.source_patcher.start()
+        self.toto_patcher = patch(
+            "history_manager.TotoHistoryManager.load_current_round",
+            return_value=NO_TOTO_ROUND,
+        )
+        self.toto_patcher.start()
+        self.history_patcher = patch(
+            "prediction_history.PredictionHistoryManager.load",
+            return_value=pd.DataFrame(),
+        )
+        self.history_patcher.start()
 
     def tearDown(self) -> None:
         self.source_patcher.stop()
+        self.toto_patcher.stop()
+        self.history_patcher.stop()
         self.environment_patcher.stop()
         self.temp_directory.cleanup()
         st.cache_data.clear()
