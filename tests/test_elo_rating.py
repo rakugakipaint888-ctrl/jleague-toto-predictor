@@ -8,7 +8,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from config import (
+from model_config import (
     CATEGORY_BONUS,
     DEFAULT_ELO_SETTINGS,
     HOME_ADVANTAGE,
@@ -111,7 +111,7 @@ class EloFormulaTest(unittest.TestCase):
 
 
 class EloArchitectureTest(unittest.TestCase):
-    def test_elo_settings_are_isolated_in_config(self) -> None:
+    def test_elo_settings_are_isolated_in_model_config(self) -> None:
         self.assertEqual(INITIAL_ELO, 1500.0)
         self.assertEqual(K_FACTOR, 20.0)
         self.assertEqual(HOME_ADVANTAGE, 65.0)

@@ -20,7 +20,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import requests
 
-from config import (
+from model_config import (
     OFFICIAL_RESULTS_CACHE_MAX_STALE_SECONDS,
     OFFICIAL_RESULTS_CACHE_TTL_SECONDS,
     OFFICIAL_RESULTS_CACHE_VERSION,

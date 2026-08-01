@@ -10,7 +10,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
-from config import DEFAULT_ELO_SETTINGS, ELO_CACHE_VERSION, EloSettings
+from model_config import DEFAULT_ELO_SETTINGS, ELO_CACHE_VERSION, EloSettings
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent

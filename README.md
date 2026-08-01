@@ -62,7 +62,7 @@ EloだけをONにすると、通常範囲ではVersion4と同じ期待得点・�
 
 ## Version5設定値
 
-設定はすべて[`config.py`](config.py)へ集約しています。
+設定はすべて[`model_config.py`](model_config.py)へ集約しています。
 
 - 直近試合の重み：`(5, 4, 3, 2, 1)`
 - 加重直近平均：60%
@@ -136,7 +136,7 @@ Jリーグ公式サイトの[著作権について](https://www.jleague.jp/gener
 
 ## Elo計算仕様
 
-設定は[`config.py`](config.py)の`EloSettings`と、`INITIAL_ELO`、
+設定は[`model_config.py`](model_config.py)の`EloSettings`と、`INITIAL_ELO`、
 `CATEGORY_BONUS`、`LEAGUE_INITIAL_ELO`、`K_FACTOR`、`HOME_ADVANTAGE`等の
 明示定数へ集約しています。`teams.py`にはElo設定を置きません。
 
@@ -259,7 +259,8 @@ Eloデータを取得できないため、Elo補正なしで計算しました�
 ## モジュール構成
 
 - `teams.py`：J1・J2・J3のクラブ情報、名称正規化、プルダウン用データ
-- `config.py`：Elo、Version5、キャッシュの設定値
+- `model_config.py`：Elo、Version5、キャッシュの設定値
+- `config.py`：Version4までのimport互換用ブリッジ
 - `elo_rating.py`：Elo計算、期待得点補正、Eloキャッシュ
 - `form_adjuster.py`：直近5試合の時系列重み付け
 - `venue_adjuster.py`：ホーム／アウェイ別成績の混合
@@ -323,7 +324,8 @@ Version4までの列を削除せず、Version5では次の指定列を追加し�
 ├── venue_adjuster.py          # ホーム／アウェイ別成績の混合
 ├── standings_adjuster.py      # 勝点・得失点差補正
 ├── model_pipeline.py          # Version5の適用順序とVersion4比較
-├── config.py                 # Elo・Version5・キャッシュ設定
+├── model_config.py           # Elo・Version5・キャッシュ設定
+├── config.py                 # Version4までのimport互換用ブリッジ
 ├── data_loader.py            # 公式試合・順位表・クラブ統計キャッシュ
 ├── data/
 │   ├── README.md             # matches.csvと実行時キャッシュの仕様

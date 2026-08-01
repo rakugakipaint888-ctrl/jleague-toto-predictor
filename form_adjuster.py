@@ -6,7 +6,7 @@ import math
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Sequence
 
-from config import DEFAULT_FORM_SETTINGS, FormSettings
+from model_config import DEFAULT_FORM_SETTINGS, FormSettings
 
 
 def _value(item: Any, field_name: str) -> Any:

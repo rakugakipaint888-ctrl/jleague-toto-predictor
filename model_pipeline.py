@@ -6,7 +6,7 @@ import math
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from config import (
+from model_config import (
     DEFAULT_FORM_SETTINGS,
     DEFAULT_MODEL_SETTINGS,
     DEFAULT_STANDINGS_SETTINGS,

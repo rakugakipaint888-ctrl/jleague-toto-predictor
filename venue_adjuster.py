@@ -6,7 +6,7 @@ import math
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from config import DEFAULT_VENUE_SETTINGS, VenueSettings
+from model_config import DEFAULT_VENUE_SETTINGS, VenueSettings
 
 
 def _valid_nonnegative(value: Any) -> Optional[float]:

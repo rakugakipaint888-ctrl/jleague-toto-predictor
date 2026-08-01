@@ -6,7 +6,7 @@ import math
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from config import DEFAULT_STANDINGS_SETTINGS, StandingsSettings
+from model_config import DEFAULT_STANDINGS_SETTINGS, StandingsSettings
 
 
 def _finite(value: Any) -> Optional[float]:
