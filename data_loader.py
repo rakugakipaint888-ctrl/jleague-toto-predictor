@@ -60,7 +60,7 @@ VISION_LEAGUE_FRAME_IDS = (35, 36)
 
 REQUEST_HEADERS = {
     "User-Agent": (
-        "Mozilla/5.0 (compatible; JLeagueTotoPersonalApp/4.0; personal-use)"
+        "Mozilla/5.0 (compatible; JLeagueTotoPersonalApp/5.0; personal-use)"
     ),
     "Accept-Language": "ja,en;q=0.5",
 }
@@ -86,6 +86,22 @@ MATCH_COLUMNS = [
     "away_recent_matches",
     "home_rank",
     "away_rank",
+    "home_points",
+    "away_points",
+    "home_goal_difference",
+    "away_goal_difference",
+    "home_season_played",
+    "home_season_wins",
+    "home_season_draws",
+    "home_season_losses",
+    "home_season_goals_for",
+    "home_season_goals_against",
+    "away_season_played",
+    "away_season_wins",
+    "away_season_draws",
+    "away_season_losses",
+    "away_season_goals_for",
+    "away_season_goals_against",
     "home_played",
     "home_wins",
     "home_draws",
@@ -119,6 +135,22 @@ DEFAULT_MATCH_METADATA = {
 DEFAULT_MATCH_DETAILS = {
     "home_rank": None,
     "away_rank": None,
+    "home_points": None,
+    "away_points": None,
+    "home_goal_difference": None,
+    "away_goal_difference": None,
+    "home_season_played": 0,
+    "home_season_wins": 0,
+    "home_season_draws": 0,
+    "home_season_losses": 0,
+    "home_season_goals_for": 0,
+    "home_season_goals_against": 0,
+    "away_season_played": 0,
+    "away_season_wins": 0,
+    "away_season_draws": 0,
+    "away_season_losses": 0,
+    "away_season_goals_for": 0,
+    "away_season_goals_against": 0,
     "home_played": 0,
     "home_wins": 0,
     "home_draws": 0,
@@ -134,11 +166,36 @@ DEFAULT_MATCH_DETAILS = {
 }
 
 RANK_COLUMNS = ("home_rank", "away_rank")
-RECORD_COLUMNS = tuple(
-    column
-    for column in DEFAULT_MATCH_DETAILS
-    if column not in RANK_COLUMNS
+OPTIONAL_NONNEGATIVE_COLUMNS = ("home_points", "away_points")
+OPTIONAL_INTEGER_COLUMNS = (
+    "home_goal_difference",
+    "away_goal_difference",
 )
+SEASON_RECORD_COLUMNS = tuple(
+    f"{side}_season_{field_name}"
+    for side in ("home", "away")
+    for field_name in (
+        "played",
+        "wins",
+        "draws",
+        "losses",
+        "goals_for",
+        "goals_against",
+    )
+)
+VENUE_RECORD_COLUMNS = tuple(
+    f"{side}_{field_name}"
+    for side in ("home", "away")
+    for field_name in (
+        "played",
+        "wins",
+        "draws",
+        "losses",
+        "goals_for",
+        "goals_against",
+    )
+)
+RECORD_COLUMNS = SEASON_RECORD_COLUMNS + VENUE_RECORD_COLUMNS
 
 
 # --------------------------------------------------
@@ -288,6 +345,57 @@ class VenueRecord:
             f"{self.goals_for}得点{self.goals_against}失点"
         )
 
+    @property
+    def average_scored(self) -> Optional[float]:
+        return self.goals_for / self.played if self.played > 0 else None
+
+    @property
+    def average_conceded(self) -> Optional[float]:
+        return self.goals_against / self.played if self.played > 0 else None
+
+
+@dataclass(frozen=True)
+class RecentMatchRecord:
+    """直近試合の時系列計算と画面表示に使う構造化データ。"""
+
+    match_date: date
+    opponent: str
+    venue: str
+    scored: int
+    conceded: int
+    result: str
+
+    @property
+    def label(self) -> str:
+        return (
+            f"{self.match_date.isoformat()} {self.venue} vs {self.opponent} "
+            f"{self.scored}-{self.conceded}（{self.result}）"
+        )
+
+
+@dataclass(frozen=True)
+class StandingsRecord:
+    """Jリーグ公式順位表の1クラブ分。未掲載値はNoneで保持する。"""
+
+    rank: Optional[int] = None
+    points: Optional[int] = None
+    played: Optional[int] = None
+    wins: Optional[int] = None
+    draws: Optional[int] = None
+    losses: Optional[int] = None
+    goals_for: Optional[int] = None
+    goals_against: Optional[int] = None
+    goal_difference: Optional[int] = None
+
+    @property
+    def is_available(self) -> bool:
+        return bool(
+            self.played is not None
+            and self.played > 0
+            and self.points is not None
+            and self.goal_difference is not None
+        )
+
 
 @dataclass(frozen=True)
 class TeamRecentStats:
@@ -296,9 +404,39 @@ class TeamRecentStats:
     average_scored: float
     average_conceded: float
     recent_matches: tuple[str, ...] = ()
+    recent_results: tuple[RecentMatchRecord, ...] = ()
     rank: Optional[int] = None
+    points: Optional[int] = None
+    played: int = 0
+    wins: int = 0
+    draws: int = 0
+    losses: int = 0
+    goals_for: int = 0
+    goals_against: int = 0
+    goal_difference: Optional[int] = None
+    standings_available: bool = False
     home_record: VenueRecord = field(default_factory=VenueRecord)
     away_record: VenueRecord = field(default_factory=VenueRecord)
+
+    @property
+    def season_average_scored(self) -> Optional[float]:
+        return self.goals_for / self.played if self.played > 0 else None
+
+    @property
+    def season_average_conceded(self) -> Optional[float]:
+        return self.goals_against / self.played if self.played > 0 else None
+
+    @property
+    def points_per_match(self) -> Optional[float]:
+        if self.played <= 0 or self.points is None:
+            return None
+        return self.points / self.played
+
+    @property
+    def goal_difference_per_match(self) -> Optional[float]:
+        if self.played <= 0 or self.goal_difference is None:
+            return None
+        return self.goal_difference / self.played
 
 
 @dataclass(frozen=True)
@@ -345,6 +483,7 @@ class OfficialDataBundle:
     completed_matches: tuple[OfficialMatch, ...]
     fetched_at: datetime
     from_cache: bool = False
+    team_stats: dict[str, TeamRecentStats] = field(default_factory=dict)
 
     @property
     def data_start_date(self) -> Optional[date]:
@@ -410,6 +549,192 @@ def _deserialize_official_matches(
     return matches
 
 
+def _serialize_venue_record(record: VenueRecord) -> dict[str, int]:
+    return {
+        "played": record.played,
+        "wins": record.wins,
+        "draws": record.draws,
+        "losses": record.losses,
+        "goals_for": record.goals_for,
+        "goals_against": record.goals_against,
+    }
+
+
+def _deserialize_venue_record(value: Any) -> VenueRecord:
+    if not isinstance(value, Mapping):
+        return VenueRecord()
+
+    try:
+        return VenueRecord(
+            played=max(0, int(value.get("played", 0))),
+            wins=max(0, int(value.get("wins", 0))),
+            draws=max(0, int(value.get("draws", 0))),
+            losses=max(0, int(value.get("losses", 0))),
+            goals_for=max(0, int(value.get("goals_for", 0))),
+            goals_against=max(0, int(value.get("goals_against", 0))),
+        )
+    except (TypeError, ValueError):
+        return VenueRecord()
+
+
+def _serialize_standings_record(record: StandingsRecord) -> dict[str, Any]:
+    return {
+        "rank": record.rank,
+        "points": record.points,
+        "played": record.played,
+        "wins": record.wins,
+        "draws": record.draws,
+        "losses": record.losses,
+        "goals_for": record.goals_for,
+        "goals_against": record.goals_against,
+        "goal_difference": record.goal_difference,
+    }
+
+
+def _deserialize_standings_records(
+    values: Any,
+) -> dict[str, StandingsRecord]:
+    if not isinstance(values, Mapping):
+        return {}
+
+    records = {}
+
+    for team_name, value in values.items():
+        if not isinstance(value, Mapping):
+            continue
+
+        canonical_name = normalize_team_name(team_name)
+        if canonical_name not in ALL_TEAM_NAME_SET:
+            continue
+
+        def optional_int(field_name: str) -> Optional[int]:
+            raw_value = value.get(field_name)
+            if raw_value is None:
+                return None
+            try:
+                return int(raw_value)
+            except (TypeError, ValueError):
+                return None
+
+        records[canonical_name] = StandingsRecord(
+            rank=optional_int("rank"),
+            points=optional_int("points"),
+            played=optional_int("played"),
+            wins=optional_int("wins"),
+            draws=optional_int("draws"),
+            losses=optional_int("losses"),
+            goals_for=optional_int("goals_for"),
+            goals_against=optional_int("goals_against"),
+            goal_difference=optional_int("goal_difference"),
+        )
+
+    return records
+
+
+def _serialize_team_stats(
+    team_stats: Mapping[str, TeamRecentStats],
+) -> dict[str, Any]:
+    return {
+        team_name: {
+            "average_scored": stats.average_scored,
+            "average_conceded": stats.average_conceded,
+            "recent_results": [
+                {
+                    "match_date": recent.match_date.isoformat(),
+                    "opponent": recent.opponent,
+                    "venue": recent.venue,
+                    "scored": recent.scored,
+                    "conceded": recent.conceded,
+                    "result": recent.result,
+                }
+                for recent in stats.recent_results
+            ],
+            "rank": stats.rank,
+            "points": stats.points,
+            "played": stats.played,
+            "wins": stats.wins,
+            "draws": stats.draws,
+            "losses": stats.losses,
+            "goals_for": stats.goals_for,
+            "goals_against": stats.goals_against,
+            "goal_difference": stats.goal_difference,
+            "standings_available": stats.standings_available,
+            "home_record": _serialize_venue_record(stats.home_record),
+            "away_record": _serialize_venue_record(stats.away_record),
+        }
+        for team_name, stats in team_stats.items()
+    }
+
+
+def _deserialize_team_stats(values: Any) -> dict[str, TeamRecentStats]:
+    if not isinstance(values, Mapping):
+        return {}
+
+    result = {}
+
+    for team_name, value in values.items():
+        if not isinstance(value, Mapping):
+            continue
+
+        canonical_name = normalize_team_name(team_name)
+        if canonical_name not in ALL_TEAM_NAME_SET:
+            continue
+
+        recent_results = []
+        for recent in value.get("recent_results", []):
+            try:
+                recent_results.append(
+                    RecentMatchRecord(
+                        match_date=date.fromisoformat(str(recent["match_date"])),
+                        opponent=normalize_team_name(recent["opponent"]),
+                        venue=str(recent["venue"]),
+                        scored=max(0, int(recent["scored"])),
+                        conceded=max(0, int(recent["conceded"])),
+                        result=str(recent["result"]),
+                    )
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+
+        try:
+            stats = TeamRecentStats(
+                average_scored=float(value["average_scored"]),
+                average_conceded=float(value["average_conceded"]),
+                recent_matches=tuple(item.label for item in recent_results),
+                recent_results=tuple(recent_results),
+                rank=(
+                    int(value["rank"])
+                    if value.get("rank") is not None
+                    else None
+                ),
+                points=(
+                    int(value["points"])
+                    if value.get("points") is not None
+                    else None
+                ),
+                played=max(0, int(value.get("played", 0))),
+                wins=max(0, int(value.get("wins", 0))),
+                draws=max(0, int(value.get("draws", 0))),
+                losses=max(0, int(value.get("losses", 0))),
+                goals_for=max(0, int(value.get("goals_for", 0))),
+                goals_against=max(0, int(value.get("goals_against", 0))),
+                goal_difference=(
+                    int(value["goal_difference"])
+                    if value.get("goal_difference") is not None
+                    else None
+                ),
+                standings_available=bool(value.get("standings_available")),
+                home_record=_deserialize_venue_record(value.get("home_record")),
+                away_record=_deserialize_venue_record(value.get("away_record")),
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+
+        result[canonical_name] = stats
+
+    return result
+
+
 def _read_official_results_cache(
     cache_path: Path,
     season_start_year: int,
@@ -456,7 +781,8 @@ def _write_official_results_cache(
     fetched_at: datetime,
     current_matches: Sequence[OfficialMatch],
     history_matches: Sequence[OfficialMatch],
-    rankings: Mapping[str, int],
+    standings: Mapping[str, StandingsRecord],
+    team_stats: Mapping[str, TeamRecentStats],
 ) -> None:
     payload = {
         "version": OFFICIAL_RESULTS_CACHE_VERSION,
@@ -470,10 +796,11 @@ def _write_official_results_cache(
             _serialize_official_match(match)
             for match in history_matches
         ],
-        "rankings": {
-            team_name: int(rank)
-            for team_name, rank in rankings.items()
+        "standings": {
+            team_name: _serialize_standings_record(record)
+            for team_name, record in standings.items()
         },
+        "team_stats": _serialize_team_stats(team_stats),
     }
 
     try:
@@ -618,10 +945,10 @@ class JLeagueOfficialDataSource:
 
         return _parse_schedule_table(schedule_table)
 
-    def _fetch_rankings(self) -> dict[str, int]:
-        """順位表を取得する。開幕前や一時失敗時は順位なしで継続する。"""
+    def _fetch_standings(self) -> dict[str, StandingsRecord]:
+        """順位・勝点・得失点を取得し、失敗カテゴリーだけ欠損とする。"""
 
-        rankings: dict[str, int] = {}
+        standings: dict[str, StandingsRecord] = {}
 
         for category, slug in STANDINGS_SLUGS.items():
             url = f"{JLEAGUE_SITE_BASE_URL}/{slug}/standings/"
@@ -633,28 +960,38 @@ class JLeagueOfficialDataSource:
                     required_headers=("順位", "クラブ"),
                 )
                 if standings_table is not None:
-                    rankings.update(_parse_standings_table(standings_table))
+                    standings.update(_parse_standings_table(standings_table))
             except MatchDataSourceError:
-                # 順位は補助情報。試合と直近成績を取得できれば予想は続行する。
+                # 順位表は補助情報。試合と直近成績を取得できれば継続する。
                 continue
 
-        return rankings
+        return standings
 
     def _create_bundle(
         self,
         current_matches: Sequence[OfficialMatch],
         history_matches: Sequence[OfficialMatch],
-        rankings: dict[str, int],
+        standings: dict[str, StandingsRecord],
         fetched_at: datetime,
         from_cache: bool,
+        cached_team_stats: Optional[dict[str, TeamRecentStats]] = None,
     ) -> OfficialDataBundle:
         reference_time = self._reference_time()
+        current_completed_matches = _deduplicate_matches(
+            match
+            for match in current_matches
+            if match.is_completed and match.match_time <= reference_time
+        )
         completed_matches = _deduplicate_matches(
             match
             for match in (*current_matches, *history_matches)
             if match.is_completed and match.match_time <= reference_time
         )
-        team_stats = _calculate_team_stats(completed_matches, rankings)
+        team_stats = cached_team_stats or _calculate_team_stats(
+            completed_matches,
+            standings,
+            season_matches=current_completed_matches,
+        )
 
         return OfficialDataBundle(
             matches=_create_upcoming_matches(
@@ -670,6 +1007,7 @@ class JLeagueOfficialDataSource:
             ),
             fetched_at=fetched_at,
             from_cache=from_cache,
+            team_stats=team_stats,
         )
 
     def _fetch_live_bundle(self) -> OfficialDataBundle:
@@ -690,8 +1028,16 @@ class JLeagueOfficialDataSource:
             for page in self._history_schedule_pages()
             for match in self._fetch_schedule_page(page)
         ]
-        rankings = self._fetch_rankings()
+        standings = self._fetch_standings()
         fetched_at = self._reference_time()
+
+        bundle = self._create_bundle(
+            current_matches,
+            history_matches,
+            standings,
+            fetched_at,
+            from_cache=False,
+        )
 
         _write_official_results_cache(
             self.cache_path,
@@ -699,16 +1045,11 @@ class JLeagueOfficialDataSource:
             fetched_at=fetched_at,
             current_matches=current_matches,
             history_matches=history_matches,
-            rankings=rankings,
+            standings=standings,
+            team_stats=bundle.team_stats,
         )
 
-        return self._create_bundle(
-            current_matches,
-            history_matches,
-            rankings,
-            fetched_at,
-            from_cache=False,
-        )
+        return bundle
 
     def _bundle_from_cache(
         self,
@@ -717,12 +1058,12 @@ class JLeagueOfficialDataSource:
         return self._create_bundle(
             _deserialize_official_matches(cache.get("current_matches", [])),
             _deserialize_official_matches(cache.get("history_matches", [])),
-            {
-                str(team_name): int(rank)
-                for team_name, rank in cache.get("rankings", {}).items()
-            },
+            _deserialize_standings_records(cache.get("standings", {})),
             datetime.fromisoformat(cache["fetched_at"]),
             from_cache=True,
+            cached_team_stats=_deserialize_team_stats(
+                cache.get("team_stats", {})
+            ),
         )
 
     def load_bundle(self) -> OfficialDataBundle:
@@ -903,23 +1244,82 @@ def _parse_schedule_table(table: pd.DataFrame) -> list[OfficialMatch]:
     return matches
 
 
-def _parse_standings_table(table: pd.DataFrame) -> dict[str, int]:
-    rank_column = _find_column(table, "順位")
-    club_column = _find_column(table, "クラブ")
+def _find_standings_column(
+    table: pd.DataFrame,
+    candidates: Sequence[str],
+) -> Optional[Any]:
+    """勝点と勝数などを取り違えないよう順位表列を完全一致で探す。"""
+
+    headers = _normalized_headers(table)
+
+    for candidate in candidates:
+        normalized_candidate = normalize_text(candidate)
+        for normalized_header, original_header in headers.items():
+            if normalized_header in (
+                normalized_candidate,
+                normalized_candidate * 2,
+            ):
+                return original_header
+
+    return None
+
+
+def _parse_optional_integer(value: Any) -> Optional[int]:
+    number = pd.to_numeric(value, errors="coerce")
+    if pd.isna(number):
+        return None
+    try:
+        return int(number)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _parse_standings_table(
+    table: pd.DataFrame,
+) -> dict[str, StandingsRecord]:
+    rank_column = _find_standings_column(table, ("順位順位", "順位"))
+    club_column = _find_standings_column(table, ("クラブ",))
 
     if rank_column is None or club_column is None:
         return {}
 
-    rankings = {}
+    columns = {
+        "points": _find_standings_column(table, ("勝点勝点", "勝点")),
+        "played": _find_standings_column(
+            table,
+            ("試合試合数", "試合数"),
+        ),
+        "wins": _find_standings_column(table, ("勝勝", "勝")),
+        "draws": _find_standings_column(table, ("分分", "分")),
+        "losses": _find_standings_column(table, ("負負", "負")),
+        "goals_for": _find_standings_column(table, ("得点得点", "得点")),
+        "goals_against": _find_standings_column(table, ("失点失点", "失点")),
+        "goal_difference": _find_standings_column(
+            table,
+            ("得失得失点", "得失点"),
+        ),
+    }
+    standings = {}
 
     for _, row in table.iterrows():
         team_name = translate_official_team_name(row.get(club_column, ""))
-        rank = pd.to_numeric(row.get(rank_column), errors="coerce")
+        if team_name not in ALL_TEAM_NAME_SET:
+            continue
 
-        if team_name in ALL_TEAM_NAME_SET and not pd.isna(rank):
-            rankings[team_name] = int(rank)
+        values = {
+            field_name: (
+                _parse_optional_integer(row.get(column))
+                if column is not None
+                else None
+            )
+            for field_name, column in columns.items()
+        }
+        standings[team_name] = StandingsRecord(
+            rank=_parse_optional_integer(row.get(rank_column)),
+            **values,
+        )
 
-    return rankings
+    return standings
 
 
 # --------------------------------------------------
@@ -965,10 +1365,10 @@ def _build_venue_record(
     wins = draws = losses = goals_for = goals_against = 0
 
     for match in matches:
-        if venue == "home" and match.home_team == team_name:
+        if venue in ("home", "all") and match.home_team == team_name:
             scored = int(match.home_goals or 0)
             conceded = int(match.away_goals or 0)
-        elif venue == "away" and match.away_team == team_name:
+        elif venue in ("away", "all") and match.away_team == team_name:
             scored = int(match.away_goals or 0)
             conceded = int(match.home_goals or 0)
         else:
@@ -1010,11 +1410,38 @@ def _format_recent_match(
     )
 
 
+def _create_recent_match_record(
+    match: OfficialMatch,
+    team_name: str,
+) -> RecentMatchRecord:
+    is_home = match.home_team == team_name
+    opponent = match.away_team if is_home else match.home_team
+    scored = int(
+        (match.home_goals if is_home else match.away_goals) or 0
+    )
+    conceded = int(
+        (match.away_goals if is_home else match.home_goals) or 0
+    )
+    result = "勝" if scored > conceded else "分" if scored == conceded else "敗"
+    return RecentMatchRecord(
+        match_date=match.match_time.date(),
+        opponent=opponent,
+        venue="H" if is_home else "A",
+        scored=scored,
+        conceded=conceded,
+        result=result,
+    )
+
+
 def _calculate_team_stats(
     completed_matches: Sequence[OfficialMatch],
-    rankings: dict[str, int],
+    standings: Mapping[str, StandingsRecord],
+    season_matches: Optional[Sequence[OfficialMatch]] = None,
 ) -> dict[str, TeamRecentStats]:
     team_stats = {}
+    season_matches = (
+        completed_matches if season_matches is None else season_matches
+    )
 
     for team_name in ALL_TEAM_NAMES:
         team_matches = [
@@ -1029,7 +1456,14 @@ def _calculate_team_stats(
             reverse=True,
         )[:5]
 
-        if not recent_matches:
+        standing = standings.get(team_name)
+        season_record = _build_venue_record(
+            season_matches,
+            team_name,
+            "all",
+        )
+
+        if not recent_matches and standing is None and season_record.played <= 0:
             continue
 
         scored_values = []
@@ -1043,17 +1477,91 @@ def _calculate_team_stats(
                 scored_values.append(int(match.away_goals or 0))
                 conceded_values.append(int(match.home_goals or 0))
 
+        recent_results = tuple(
+            _create_recent_match_record(match, team_name)
+            for match in recent_matches
+        )
+        played = (
+            standing.played
+            if standing and standing.played is not None
+            else season_record.played
+        )
+        wins = (
+            standing.wins
+            if standing and standing.wins is not None
+            else season_record.wins
+        )
+        draws = (
+            standing.draws
+            if standing and standing.draws is not None
+            else season_record.draws
+        )
+        losses = (
+            standing.losses
+            if standing and standing.losses is not None
+            else season_record.losses
+        )
+        goals_for = (
+            standing.goals_for
+            if standing and standing.goals_for is not None
+            else season_record.goals_for
+        )
+        goals_against = (
+            standing.goals_against
+            if standing and standing.goals_against is not None
+            else season_record.goals_against
+        )
+        points = (
+            standing.points
+            if standing and standing.points is not None
+            else (
+                season_record.wins * 3 + season_record.draws
+                if season_record.played > 0
+                else None
+            )
+        )
+        goal_difference = (
+            standing.goal_difference
+            if standing and standing.goal_difference is not None
+            else (
+                season_record.goals_for - season_record.goals_against
+                if season_record.played > 0
+                else None
+            )
+        )
+        average_scored = (
+            sum(scored_values) / len(scored_values)
+            if scored_values
+            else goals_for / played
+            if played > 0
+            else 1.3
+        )
+        average_conceded = (
+            sum(conceded_values) / len(conceded_values)
+            if conceded_values
+            else goals_against / played
+            if played > 0
+            else 1.3
+        )
+
         team_stats[team_name] = TeamRecentStats(
-            average_scored=round(sum(scored_values) / len(scored_values), 2),
-            average_conceded=round(
-                sum(conceded_values) / len(conceded_values),
-                2,
-            ),
+            average_scored=round(average_scored, 2),
+            average_conceded=round(average_conceded, 2),
             recent_matches=tuple(
                 _format_recent_match(match, team_name)
                 for match in recent_matches
             ),
-            rank=rankings.get(team_name),
+            recent_results=recent_results,
+            rank=standing.rank if standing else None,
+            points=points,
+            played=int(played),
+            wins=int(wins),
+            draws=int(draws),
+            losses=int(losses),
+            goals_for=int(goals_for),
+            goals_against=int(goals_against),
+            goal_difference=goal_difference,
+            standings_available=bool(standing and standing.is_available),
             home_record=_build_venue_record(
                 completed_matches,
                 team_name,
@@ -1077,6 +1585,26 @@ def _record_values(prefix: str, record: VenueRecord) -> dict[str, int]:
         f"{prefix}_losses": record.losses,
         f"{prefix}_goals_for": record.goals_for,
         f"{prefix}_goals_against": record.goals_against,
+    }
+
+
+def _standing_values(
+    prefix: str,
+    stats: Optional[TeamRecentStats],
+) -> dict[str, Any]:
+    return {
+        f"{prefix}_points": stats.points if stats else None,
+        f"{prefix}_goal_difference": (
+            stats.goal_difference if stats else None
+        ),
+        f"{prefix}_season_played": stats.played if stats else 0,
+        f"{prefix}_season_wins": stats.wins if stats else 0,
+        f"{prefix}_season_draws": stats.draws if stats else 0,
+        f"{prefix}_season_losses": stats.losses if stats else 0,
+        f"{prefix}_season_goals_for": stats.goals_for if stats else 0,
+        f"{prefix}_season_goals_against": (
+            stats.goals_against if stats else 0
+        ),
     }
 
 
@@ -1140,6 +1668,8 @@ def _create_upcoming_matches(
                 "away_recent_matches": _join_recent_matches(away_stats),
                 "home_rank": home_stats.rank if home_stats else None,
                 "away_rank": away_stats.rank if away_stats else None,
+                **_standing_values("home", home_stats),
+                **_standing_values("away", away_stats),
                 **_record_values("home", home_record),
                 **_record_values("away", away_record),
             }
@@ -1208,6 +1738,24 @@ def _normalize_nonnegative_integer(value: Any) -> int:
     return int(number)
 
 
+def _normalize_optional_nonnegative_integer(value: Any) -> Optional[int]:
+    number = pd.to_numeric(value, errors="coerce")
+
+    if pd.isna(number) or float(number) < 0:
+        return None
+
+    return int(number)
+
+
+def _normalize_optional_integer(value: Any) -> Optional[int]:
+    number = pd.to_numeric(value, errors="coerce")
+
+    if pd.isna(number):
+        return None
+
+    return int(number)
+
+
 def normalize_matches(raw_matches: pd.DataFrame) -> pd.DataFrame:
     """CSV・公式データをapp.pyが使う共通形式へそろえる。"""
 
@@ -1270,6 +1818,20 @@ def normalize_matches(raw_matches: pd.DataFrame) -> pd.DataFrame:
             matches[rank_column] = None
         matches[rank_column] = matches[rank_column].map(_normalize_rank)
 
+    for optional_column in OPTIONAL_NONNEGATIVE_COLUMNS:
+        if optional_column not in matches.columns:
+            matches[optional_column] = None
+        matches[optional_column] = matches[optional_column].map(
+            _normalize_optional_nonnegative_integer
+        )
+
+    for optional_column in OPTIONAL_INTEGER_COLUMNS:
+        if optional_column not in matches.columns:
+            matches[optional_column] = None
+        matches[optional_column] = matches[optional_column].map(
+            _normalize_optional_integer
+        )
+
     for record_column in RECORD_COLUMNS:
         if record_column not in matches.columns:
             matches[record_column] = 0
@@ -1295,6 +1857,39 @@ def _row_venue_record(row: pd.Series, prefix: str) -> VenueRecord:
         goals_against=_normalize_nonnegative_integer(
             row.get(f"{prefix}_goals_against")
         ),
+    )
+
+
+def _parse_recent_match_text(value: str) -> Optional[RecentMatchRecord]:
+    match = re.match(
+        r"^(\d{4}-\d{2}-\d{2})\s+([HA])\s+vs\s+(.+?)\s+"
+        r"(\d+)-(\d+)(?:（([勝分敗])）)?$",
+        str(value).strip(),
+    )
+
+    if not match:
+        return None
+
+    date_text, venue, opponent, scored_text, conceded_text, result = (
+        match.groups()
+    )
+    try:
+        scored = int(scored_text)
+        conceded = int(conceded_text)
+        match_date = date.fromisoformat(date_text)
+    except (TypeError, ValueError):
+        return None
+
+    if not result:
+        result = "勝" if scored > conceded else "分" if scored == conceded else "敗"
+
+    return RecentMatchRecord(
+        match_date=match_date,
+        opponent=normalize_team_name(opponent),
+        venue=venue,
+        scored=scored,
+        conceded=conceded,
+        result=result,
     )
 
 
@@ -1340,9 +1935,55 @@ def extract_team_stats(raw_matches: pd.DataFrame) -> dict[str, TeamRecentStats]:
                 for item in recent_text.split(" / ")
                 if item.strip()
             )
+            recent_results = tuple(
+                parsed
+                for parsed in (
+                    _parse_recent_match_text(item)
+                    for item in recent_matches
+                )
+                if parsed is not None
+            )
 
             existing = team_stats.get(team_name)
             rank = _normalize_rank(row.get(f"{side}_rank"))
+            points = _normalize_optional_nonnegative_integer(
+                row.get(f"{side}_points")
+            )
+            played_value = row.get(f"{side}_season_played")
+            season_played = _normalize_nonnegative_integer(played_value)
+            season_wins = _normalize_nonnegative_integer(
+                row.get(f"{side}_season_wins")
+            )
+            season_draws = _normalize_nonnegative_integer(
+                row.get(f"{side}_season_draws")
+            )
+            season_losses = _normalize_nonnegative_integer(
+                row.get(f"{side}_season_losses")
+            )
+            season_goals_for = _normalize_nonnegative_integer(
+                row.get(f"{side}_season_goals_for")
+            )
+            season_goals_against = _normalize_nonnegative_integer(
+                row.get(f"{side}_season_goals_against")
+            )
+            goal_difference = _normalize_optional_integer(
+                row.get(f"{side}_goal_difference")
+            )
+
+            if existing and season_played <= 0:
+                season_played = existing.played
+                season_wins = existing.wins
+                season_draws = existing.draws
+                season_losses = existing.losses
+                season_goals_for = existing.goals_for
+                season_goals_against = existing.goals_against
+            if points is None and existing:
+                points = existing.points
+            if goal_difference is None and existing:
+                goal_difference = existing.goal_difference
+            if goal_difference is None and season_played > 0:
+                goal_difference = season_goals_for - season_goals_against
+
             home_record = existing.home_record if existing else VenueRecord()
             away_record = existing.away_record if existing else VenueRecord()
 
@@ -1357,7 +1998,23 @@ def extract_team_stats(raw_matches: pd.DataFrame) -> dict[str, TeamRecentStats]:
                 recent_matches=recent_matches or (
                     existing.recent_matches if existing else ()
                 ),
+                recent_results=recent_results or (
+                    existing.recent_results if existing else ()
+                ),
                 rank=rank if rank is not None else (existing.rank if existing else None),
+                points=points,
+                played=season_played,
+                wins=season_wins,
+                draws=season_draws,
+                losses=season_losses,
+                goals_for=season_goals_for,
+                goals_against=season_goals_against,
+                goal_difference=goal_difference,
+                standings_available=bool(
+                    season_played > 0
+                    and points is not None
+                    and goal_difference is not None
+                ),
                 home_record=home_record,
                 away_record=away_record,
             )
@@ -1378,14 +2035,16 @@ def _load_single_source(source: MatchDataSource) -> MatchDataLoadResult:
             data_start_date = bundle.data_start_date
             data_end_date = bundle.data_end_date
             official_cache_used = bool(bundle.from_cache)
+            bundle_team_stats = dict(getattr(bundle, "team_stats", {}) or {})
         else:
             raw_matches = source.load()
             completed_matches = ()
             data_start_date = None
             data_end_date = None
             official_cache_used = False
+            bundle_team_stats = {}
 
-        team_stats = extract_team_stats(raw_matches)
+        team_stats = bundle_team_stats or extract_team_stats(raw_matches)
         matches = normalize_matches(raw_matches)
     except MatchDataNotFoundError:
         return MatchDataLoadResult(

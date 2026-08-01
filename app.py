@@ -9,17 +9,18 @@ from data_loader import (
 )
 from elo_rating import (
     EloCalculationResult,
-    adjust_expected_goals,
     get_elo_cache_path,
     get_team_elo,
     load_or_calculate_elo,
 )
+from model_pipeline import (
+    ModelOptions,
+    TeamModelInput,
+    predict_match,
+)
 from prediction import (
-    calculate_expected_goals,
-    calculate_match_probabilities,
     create_reason,
     get_confidence_label,
-    get_toto_prediction,
 )
 from teams import (
     TEAM_CATEGORY_BY_NAME,
@@ -118,6 +119,21 @@ def format_elo_value(elo_value) -> str:
     return f"{float(elo_value):.1f}" if elo_value is not None else "未取得"
 
 
+def round_optional(value, digits: int = 4):
+    """欠損値を保持したままCSV用に丸める。"""
+
+    return round(float(value), digits) if value is not None else None
+
+
+def format_optional(value, digits: int = 2, signed: bool = False) -> str:
+    """詳細画面で欠損値を安全に表示する。"""
+
+    if value is None:
+        return "未取得"
+    format_spec = f"+.{digits}f" if signed else f".{digits}f"
+    return format(float(value), format_spec)
+
+
 def apply_team_stats(
     match_number: int,
     side: str,
@@ -148,6 +164,23 @@ def apply_team_stats(
     )
 
     st.session_state[f"{side}_rank_{match_number}"] = stats.rank
+    st.session_state[f"{side}_points_{match_number}"] = stats.points
+    st.session_state[f"{side}_season_played_{match_number}"] = stats.played
+    st.session_state[f"{side}_season_wins_{match_number}"] = stats.wins
+    st.session_state[f"{side}_season_draws_{match_number}"] = stats.draws
+    st.session_state[f"{side}_season_losses_{match_number}"] = stats.losses
+    st.session_state[f"{side}_season_goals_for_{match_number}"] = (
+        stats.goals_for
+    )
+    st.session_state[f"{side}_season_goals_against_{match_number}"] = (
+        stats.goals_against
+    )
+    st.session_state[f"{side}_goal_difference_{match_number}"] = (
+        stats.goal_difference
+    )
+    st.session_state[f"{side}_standings_available_{match_number}"] = (
+        stats.standings_available
+    )
 
     record = stats.home_record if side == "home" else stats.away_record
 
@@ -173,6 +206,15 @@ def get_recent_matches(
     return stats.recent_matches if stats else ()
 
 
+def get_team_stats(
+    team_name: str,
+    team_stats: dict[str, TeamRecentStats],
+) -> TeamRecentStats | None:
+    """選択クラブの構造化統計を返す。"""
+
+    return team_stats.get(team_name)
+
+
 def get_team_detail_defaults(
     match_number: int,
     side: str,
@@ -188,6 +230,15 @@ def get_team_detail_defaults(
         record = stats.home_record if side == "home" else stats.away_record
         defaults = {
             "rank": stats.rank,
+            "points": stats.points,
+            "season_played": stats.played,
+            "season_wins": stats.wins,
+            "season_draws": stats.draws,
+            "season_losses": stats.losses,
+            "season_goals_for": stats.goals_for,
+            "season_goals_against": stats.goals_against,
+            "goal_difference": stats.goal_difference,
+            "standings_available": stats.standings_available,
             "wins": record.wins,
             "draws": record.draws,
             "losses": record.losses,
@@ -197,6 +248,25 @@ def get_team_detail_defaults(
     else:
         defaults = {
             "rank": match_defaults[f"{side}_rank"],
+            "points": match_defaults[f"{side}_points"],
+            "season_played": match_defaults[f"{side}_season_played"],
+            "season_wins": match_defaults[f"{side}_season_wins"],
+            "season_draws": match_defaults[f"{side}_season_draws"],
+            "season_losses": match_defaults[f"{side}_season_losses"],
+            "season_goals_for": match_defaults[
+                f"{side}_season_goals_for"
+            ],
+            "season_goals_against": match_defaults[
+                f"{side}_season_goals_against"
+            ],
+            "goal_difference": match_defaults[
+                f"{side}_goal_difference"
+            ],
+            "standings_available": bool(
+                match_defaults[f"{side}_season_played"] > 0
+                and match_defaults[f"{side}_points"] is not None
+                and match_defaults[f"{side}_goal_difference"] is not None
+            ),
             "wins": match_defaults[f"{side}_wins"],
             "draws": match_defaults[f"{side}_draws"],
             "losses": match_defaults[f"{side}_losses"],
@@ -204,11 +274,23 @@ def get_team_detail_defaults(
             "goals_against": match_defaults[f"{side}_goals_against"],
         }
 
+    original_standings_available = bool(defaults["standings_available"])
+    availability_key = f"{side}_standings_available_{match_number}"
+
     # 一度ユーザーが修正した値は、同じチームの間は維持する。
     for field_name in defaults:
+        if field_name == "standings_available":
+            continue
         session_key = f"{side}_{field_name}_{match_number}"
         if session_key in st.session_state:
             defaults[field_name] = st.session_state[session_key]
+
+    if availability_key in st.session_state:
+        defaults["standings_available"] = bool(
+            st.session_state[availability_key]
+        )
+    else:
+        defaults["standings_available"] = original_standings_available
 
     return defaults
 
@@ -241,48 +323,89 @@ def format_detail_summary(
     return f"{rank_label}｜{venue_label}：{record.label}"
 
 
+def format_standings_summary(detail_values: dict) -> str:
+    """順位表の勝点・試合数・得失点差を安全に表示する。"""
+
+    points = detail_values.get("points")
+    goal_difference = detail_values.get("goal_difference")
+    points_label = str(int(points)) if points is not None else "未取得"
+    goal_difference_label = (
+        f"{int(goal_difference):+d}"
+        if goal_difference is not None
+        else "未取得"
+    )
+    return (
+        f"勝点 {points_label}｜{int(detail_values['season_played'])}試合｜"
+        f"得失点差 {goal_difference_label}"
+    )
+
+
+def season_average(detail_values: dict, field_name: str):
+    """順位表の試合数と得失点からシーズン平均を返す。"""
+
+    played = int(detail_values.get("season_played", 0))
+    if played <= 0:
+        return None
+    return float(detail_values[field_name]) / played
+
+
 def create_detail_inputs(
     match_number: int,
     side: str,
     defaults: dict,
 ) -> dict:
-    """選択中の1試合だけ、順位と会場別成績を編集可能にする。"""
+    """選択中の1試合だけ、順位表と会場別成績を編集可能にする。"""
 
-    rank_key = f"{side}_rank_{match_number}"
-    rank_options = {
-        "label": "順位",
-        "min_value": 1,
-        "max_value": 60,
-        "step": 1,
-        "key": rank_key,
-        "placeholder": "未確定",
-    }
+    values = {}
 
-    if rank_key not in st.session_state:
-        rank_options["value"] = (
-            int(defaults["rank"])
-            if defaults["rank"] is not None
-            else None
-        )
+    st.caption("順位表（シーズン全体）")
+    standing_columns = st.columns(4)
+    standing_fields = (
+        ("rank", "順位", 1, 60, True),
+        ("points", "勝点", 0, 999, True),
+        ("season_played", "試合数", 0, 99, False),
+        ("goal_difference", "得失点差", -999, 999, True),
+    )
 
-    rank = st.number_input(**rank_options)
-
-    values = {"rank": rank}
-    labels = {
-        "wins": "勝",
-        "draws": "分",
-        "losses": "敗",
-        "goals_for": "得点",
-        "goals_against": "失点",
-    }
-
-    result_columns = st.columns(3)
-
-    for field_index, field_name in enumerate(("wins", "draws", "losses")):
-        with result_columns[field_index]:
+    for field_index, (
+        field_name,
+        label,
+        minimum,
+        maximum,
+        optional,
+    ) in enumerate(standing_fields):
+        with standing_columns[field_index]:
             input_key = f"{side}_{field_name}_{match_number}"
             input_options = {
-                "label": labels[field_name],
+                "label": label,
+                "min_value": minimum,
+                "max_value": maximum,
+                "step": 1,
+                "key": input_key,
+            }
+            if optional:
+                input_options["placeholder"] = "未取得"
+            if input_key not in st.session_state:
+                default_value = defaults[field_name]
+                input_options["value"] = (
+                    int(default_value)
+                    if default_value is not None
+                    else None
+                )
+            values[field_name] = st.number_input(**input_options)
+
+    season_result_columns = st.columns(3)
+    for field_index, (field_name, label) in enumerate(
+        (
+            ("season_wins", "全体・勝"),
+            ("season_draws", "全体・分"),
+            ("season_losses", "全体・敗"),
+        )
+    ):
+        with season_result_columns[field_index]:
+            input_key = f"{side}_{field_name}_{match_number}"
+            input_options = {
+                "label": label,
                 "min_value": 0,
                 "max_value": 99,
                 "step": 1,
@@ -292,13 +415,17 @@ def create_detail_inputs(
                 input_options["value"] = int(defaults[field_name])
             values[field_name] = st.number_input(**input_options)
 
-    score_columns = st.columns(2)
-
-    for field_index, field_name in enumerate(("goals_for", "goals_against")):
-        with score_columns[field_index]:
+    season_score_columns = st.columns(2)
+    for field_index, (field_name, label) in enumerate(
+        (
+            ("season_goals_for", "全体・得点"),
+            ("season_goals_against", "全体・失点"),
+        )
+    ):
+        with season_score_columns[field_index]:
             input_key = f"{side}_{field_name}_{match_number}"
             input_options = {
-                "label": labels[field_name],
+                "label": label,
                 "min_value": 0,
                 "max_value": 999,
                 "step": 1,
@@ -308,6 +435,54 @@ def create_detail_inputs(
                 input_options["value"] = int(defaults[field_name])
             values[field_name] = st.number_input(**input_options)
 
+    st.caption("会場別成績")
+    venue_labels = {
+        "wins": "会場別・勝",
+        "draws": "会場別・分",
+        "losses": "会場別・敗",
+        "goals_for": "会場別・得点",
+        "goals_against": "会場別・失点",
+    }
+    venue_result_columns = st.columns(3)
+
+    for field_index, field_name in enumerate(("wins", "draws", "losses")):
+        with venue_result_columns[field_index]:
+            input_key = f"{side}_{field_name}_{match_number}"
+            input_options = {
+                "label": venue_labels[field_name],
+                "min_value": 0,
+                "max_value": 99,
+                "step": 1,
+                "key": input_key,
+            }
+            if input_key not in st.session_state:
+                input_options["value"] = int(defaults[field_name])
+            values[field_name] = st.number_input(**input_options)
+
+    venue_score_columns = st.columns(2)
+
+    for field_index, field_name in enumerate(("goals_for", "goals_against")):
+        with venue_score_columns[field_index]:
+            input_key = f"{side}_{field_name}_{match_number}"
+            input_options = {
+                "label": venue_labels[field_name],
+                "min_value": 0,
+                "max_value": 999,
+                "step": 1,
+                "key": input_key,
+            }
+            if input_key not in st.session_state:
+                input_options["value"] = int(defaults[field_name])
+            values[field_name] = st.number_input(**input_options)
+
+    values["standings_available"] = bool(
+        values["season_played"] > 0
+        and values["points"] is not None
+        and values["goal_difference"] is not None
+    )
+    st.session_state[f"{side}_standings_available_{match_number}"] = values[
+        "standings_available"
+    ]
     return values
 
 
@@ -340,12 +515,12 @@ def create_average_input(
 st.title("⚽ Jリーグ toto予想")
 
 st.caption(
-    "Jリーグ公式データの直近5試合から、"
+    "Jリーグ公式の直近成績・会場別成績・順位表とEloから、"
     "13試合の勝敗確率を計算します。"
 )
 
 st.warning(
-    "このアプリはVersion 4の試作モデルです。"
+    "このアプリはVersion 5の試作モデルです。"
     "的中や利益を保証するものではありません。"
 )
 
@@ -379,7 +554,26 @@ use_elo_adjustment = st.toggle(
     key="use_elo_adjustment",
 )
 
-elo_adjustment_enabled = bool(use_elo_adjustment and elo_available)
+use_venue_adjustment = st.toggle(
+    "ホーム／アウェイ成績を使用する",
+    value=True,
+    help="会場別試合数に応じて40%・60%・70%で全体成績へ混合します。",
+    key="use_venue_adjustment",
+)
+
+use_recent_weighting = st.toggle(
+    "直近成績の時系列重み付けを使用する",
+    value=True,
+    help="最新順に5・4・3・2・1で重み付けし、シーズン平均と混合します。",
+    key="use_recent_weighting",
+)
+
+use_standings_adjustment = st.toggle(
+    "順位・勝点・得失点差補正を使用する",
+    value=True,
+    help="1試合平均勝点と得失点差を合計最大±8%で反映します。",
+    key="use_standings_adjustment",
+)
 
 if not elo_available:
     st.warning(
@@ -393,8 +587,9 @@ with st.expander("入力方法を見る"):
         平均得点・平均失点・順位・ホーム／アウェイ成績を自動入力します。
         自動入力後の数字は自由に修正できます。
 
-        Elo補正をONにすると、公式試合結果から計算した実力差を
-        Version3の期待得点へ最大±15%の範囲で反映します。
+        Version5では、最新試合ほど強い時系列重み、ホーム／アウェイ別平均、
+        Elo、1試合平均勝点・得失点差を順番に期待得点へ反映します。
+        4つのスイッチは独立しており、Version4相当との比較表も表示します。
 
         Jリーグ公式データを取得できない場合はCSV、CSVもない場合は
         手入力へ自動で切り替わります。
@@ -402,11 +597,10 @@ with st.expander("入力方法を見る"):
     )
 
 edit_detail_stats = st.toggle(
-    "順位・ホーム／アウェイ成績を修正する",
+    "順位表・ホーム／アウェイ成績を修正する",
     value=False,
     help=(
-        "予測計算は平均得点・平均失点と、ONの場合はEloを使用します。"
-        "順位と会場別成績はVersion5以降の分析機能用です。"
+        "自動取得した勝点・シーズン成績・会場別成績を1試合ずつ修正できます。"
     ),
     key="edit_detail_stats",
 )
@@ -557,7 +751,7 @@ for match_number in range(1, 14):
     )
 
     if editable_match_number == match_number:
-        with st.expander("順位・会場別成績を修正", expanded=True):
+        with st.expander("順位表・会場別成績を修正", expanded=True):
             detail_col1, detail_col2 = st.columns(2)
 
             with detail_col1:
@@ -589,6 +783,7 @@ for match_number in range(1, 14):
                 "ホーム成績",
             )
         )
+        st.caption(format_standings_summary(home_detail_values))
         st.caption(f"ホームElo：{format_elo_value(home_elo)}")
 
     with detail_summary_col2:
@@ -599,6 +794,7 @@ for match_number in range(1, 14):
                 "アウェイ成績",
             )
         )
+        st.caption(format_standings_summary(away_detail_values))
         st.caption(f"アウェイElo：{format_elo_value(away_elo)}")
 
     if elo_difference is not None:
@@ -612,16 +808,28 @@ for match_number in range(1, 14):
         away_team,
         match_data_result.team_stats,
     )
+    home_stats = get_team_stats(home_team, match_data_result.team_stats)
+    away_stats = get_team_stats(away_team, match_data_result.team_stats)
+    home_recent_results = home_stats.recent_results if home_stats else ()
+    away_recent_results = away_stats.recent_results if away_stats else ()
 
     if home_recent_matches or away_recent_matches:
         with st.expander("自動取得した直近5試合を見る"):
             if home_recent_matches:
                 st.write(f"**{home_team}**")
-                for recent_match in home_recent_matches:
+                displayed_home_matches = (
+                    tuple(item.label for item in home_recent_results)
+                    or home_recent_matches
+                )
+                for recent_match in displayed_home_matches:
                     st.caption(recent_match)
             if away_recent_matches:
                 st.write(f"**{away_team}**")
-                for recent_match in away_recent_matches:
+                displayed_away_matches = (
+                    tuple(item.label for item in away_recent_results)
+                    or away_recent_matches
+                )
+                for recent_match in displayed_away_matches:
                     st.caption(recent_match)
 
     match_inputs.append(
@@ -635,6 +843,36 @@ for match_number in range(1, 14):
             "away_conceded": away_conceded,
             "home_rank": home_detail_values["rank"],
             "away_rank": away_detail_values["rank"],
+            "home_points": home_detail_values["points"],
+            "away_points": away_detail_values["points"],
+            "home_played": home_detail_values["season_played"],
+            "away_played": away_detail_values["season_played"],
+            "home_goal_difference": home_detail_values["goal_difference"],
+            "away_goal_difference": away_detail_values["goal_difference"],
+            "home_standings_available": home_detail_values[
+                "standings_available"
+            ],
+            "away_standings_available": away_detail_values[
+                "standings_available"
+            ],
+            "home_season_scored": season_average(
+                home_detail_values,
+                "season_goals_for",
+            ),
+            "home_season_conceded": season_average(
+                home_detail_values,
+                "season_goals_against",
+            ),
+            "away_season_scored": season_average(
+                away_detail_values,
+                "season_goals_for",
+            ),
+            "away_season_conceded": season_average(
+                away_detail_values,
+                "season_goals_against",
+            ),
+            "home_recent_results": home_recent_results,
+            "away_recent_results": away_recent_results,
             "home_record": home_record,
             "away_record": away_record,
             "home_elo": home_elo,
@@ -657,55 +895,72 @@ submitted = st.button(
 # --------------------------------------------------
 
 if submitted:
-
     results = []
+    model_options = ModelOptions(
+        use_elo=bool(use_elo_adjustment and elo_available),
+        use_venue=use_venue_adjustment,
+        use_recent_weighting=use_recent_weighting,
+        use_standings=use_standings_adjustment,
+    )
 
     for match in match_inputs:
-
         try:
-            (
-                home_expected_before_elo,
-                away_expected_before_elo,
-            ) = calculate_expected_goals(
-                home_scored=match["home_scored"],
-                home_conceded=match["home_conceded"],
-                away_scored=match["away_scored"],
-                away_conceded=match["away_conceded"],
+            pipeline = predict_match(
+                TeamModelInput(
+                    team_name=match["home_team"],
+                    recent_scored_average=match["home_scored"],
+                    recent_conceded_average=match["home_conceded"],
+                    recent_matches=match["home_recent_results"],
+                    season_scored_average=match["home_season_scored"],
+                    season_conceded_average=match["home_season_conceded"],
+                    venue_record=match["home_record"],
+                    rank=match["home_rank"],
+                    points=(
+                        match["home_points"]
+                        if match["home_standings_available"]
+                        else None
+                    ),
+                    played=(
+                        match["home_played"]
+                        if match["home_standings_available"]
+                        else None
+                    ),
+                    goal_difference=(
+                        match["home_goal_difference"]
+                        if match["home_standings_available"]
+                        else None
+                    ),
+                    elo=match["home_elo"],
+                ),
+                TeamModelInput(
+                    team_name=match["away_team"],
+                    recent_scored_average=match["away_scored"],
+                    recent_conceded_average=match["away_conceded"],
+                    recent_matches=match["away_recent_results"],
+                    season_scored_average=match["away_season_scored"],
+                    season_conceded_average=match["away_season_conceded"],
+                    venue_record=match["away_record"],
+                    rank=match["away_rank"],
+                    points=(
+                        match["away_points"]
+                        if match["away_standings_available"]
+                        else None
+                    ),
+                    played=(
+                        match["away_played"]
+                        if match["away_standings_available"]
+                        else None
+                    ),
+                    goal_difference=(
+                        match["away_goal_difference"]
+                        if match["away_standings_available"]
+                        else None
+                    ),
+                    elo=match["away_elo"],
+                ),
+                options=model_options,
             )
-
-            match_elo_enabled = bool(
-                elo_adjustment_enabled
-                and match["home_elo"] is not None
-                and match["away_elo"] is not None
-            )
-
-            if (
-                match["home_elo"] is not None
-                and match["away_elo"] is not None
-            ):
-                expected_goals = adjust_expected_goals(
-                    home_expected=home_expected_before_elo,
-                    away_expected=away_expected_before_elo,
-                    home_elo=match["home_elo"],
-                    away_elo=match["away_elo"],
-                    enabled=match_elo_enabled,
-                )
-                home_expected_after_elo = expected_goals.home_after
-                away_expected_after_elo = expected_goals.away_after
-            else:
-                home_expected_after_elo = home_expected_before_elo
-                away_expected_after_elo = away_expected_before_elo
-
-            probabilities = calculate_match_probabilities(
-                home_expected=home_expected_after_elo,
-                away_expected=away_expected_after_elo,
-            )
-
-            prediction, top_probability = get_toto_prediction(
-                home_win=probabilities["home_win"],
-                draw=probabilities["draw"],
-                away_win=probabilities["away_win"],
-            )
+            probabilities = pipeline.version5_probabilities
 
             confidence = get_confidence_label(
                 [
@@ -716,8 +971,8 @@ if submitted:
             )
 
             reason = create_reason(
-                home_expected=home_expected_after_elo,
-                away_expected=away_expected_after_elo,
+                home_expected=pipeline.expected_final.home,
+                away_expected=pipeline.expected_final.away,
                 home_win=probabilities["home_win"],
                 draw=probabilities["draw"],
                 away_win=probabilities["away_win"],
@@ -743,9 +998,9 @@ if submitted:
                         probabilities["away_win"] * 100,
                         1,
                     ),
-                    "本命": prediction,
+                    "本命": pipeline.version5_prediction,
                     "最高確率": round(
-                        top_probability * 100,
+                        pipeline.version5_top_probability * 100,
                         1,
                     ),
                     "判定": confidence,
@@ -755,6 +1010,58 @@ if submitted:
                         f'{probabilities["away_goals"]}'
                     ),
                     "予想理由": reason,
+                    "home_rank": match["home_rank"],
+                    "away_rank": match["away_rank"],
+                    "home_points": match["home_points"],
+                    "away_points": match["away_points"],
+                    "home_goal_difference": match["home_goal_difference"],
+                    "away_goal_difference": match["away_goal_difference"],
+                    "home_points_per_match": round_optional(
+                        pipeline.standings.home_points_per_match
+                    ),
+                    "away_points_per_match": round_optional(
+                        pipeline.standings.away_points_per_match
+                    ),
+                    "home_recent_scored_average": round(
+                        match["home_scored"],
+                        4,
+                    ),
+                    "home_recent_conceded_average": round(
+                        match["home_conceded"],
+                        4,
+                    ),
+                    "away_recent_scored_average": round(
+                        match["away_scored"],
+                        4,
+                    ),
+                    "away_recent_conceded_average": round(
+                        match["away_conceded"],
+                        4,
+                    ),
+                    "home_recent_weighted_scored": round_optional(
+                        pipeline.home_form.weighted_scored
+                    ),
+                    "home_recent_weighted_conceded": round_optional(
+                        pipeline.home_form.weighted_conceded
+                    ),
+                    "away_recent_weighted_scored": round_optional(
+                        pipeline.away_form.weighted_scored
+                    ),
+                    "away_recent_weighted_conceded": round_optional(
+                        pipeline.away_form.weighted_conceded
+                    ),
+                    "home_home_scored_average": round_optional(
+                        pipeline.venue.home.venue_scored
+                    ),
+                    "home_home_conceded_average": round_optional(
+                        pipeline.venue.home.venue_conceded
+                    ),
+                    "away_away_scored_average": round_optional(
+                        pipeline.venue.away.venue_scored
+                    ),
+                    "away_away_conceded_average": round_optional(
+                        pipeline.venue.away.venue_conceded
+                    ),
                     "home_elo": (
                         round(match["home_elo"], 2)
                         if match["home_elo"] is not None
@@ -771,29 +1078,119 @@ if submitted:
                         else None
                     ),
                     "home_expected_before_elo": round(
-                        home_expected_before_elo,
+                        pipeline.expected_after_venue.home,
                         4,
                     ),
                     "away_expected_before_elo": round(
-                        away_expected_before_elo,
+                        pipeline.expected_after_venue.away,
                         4,
                     ),
                     "home_expected_after_elo": round(
-                        home_expected_after_elo,
+                        pipeline.expected_after_elo.home,
                         4,
                     ),
                     "away_expected_after_elo": round(
-                        away_expected_after_elo,
+                        pipeline.expected_after_elo.away,
                         4,
                     ),
-                    "elo_adjustment_enabled": match_elo_enabled,
+                    "elo_adjustment_enabled": pipeline.elo_adjustment_enabled,
+                    "home_expected_before_version5": round(
+                        pipeline.version4.expected_after_elo.home,
+                        4,
+                    ),
+                    "away_expected_before_version5": round(
+                        pipeline.version4.expected_after_elo.away,
+                        4,
+                    ),
+                    "home_expected_after_version5": round(
+                        pipeline.expected_final.home,
+                        4,
+                    ),
+                    "away_expected_after_version5": round(
+                        pipeline.expected_final.away,
+                        4,
+                    ),
+                    "venue_adjustment_enabled": (
+                        pipeline.venue_adjustment_enabled
+                    ),
+                    "recent_weighting_enabled": (
+                        pipeline.recent_weighting_enabled
+                    ),
+                    "standings_adjustment_enabled": (
+                        pipeline.standings_adjustment_enabled
+                    ),
+                    "version4_prediction": pipeline.version4.prediction,
+                    "version5_prediction": pipeline.version5_prediction,
+                    "prediction_changed": pipeline.prediction_changed,
+                    "version4_home_win": round(
+                        pipeline.version4.probabilities["home_win"] * 100,
+                        1,
+                    ),
+                    "version4_draw": round(
+                        pipeline.version4.probabilities["draw"] * 100,
+                        1,
+                    ),
+                    "version4_away_win": round(
+                        pipeline.version4.probabilities["away_win"] * 100,
+                        1,
+                    ),
+                    "version4_top_probability": round(
+                        pipeline.version4.top_probability * 100,
+                        1,
+                    ),
+                    "home_expected_basic": round(
+                        pipeline.expected_basic.home,
+                        4,
+                    ),
+                    "away_expected_basic": round(
+                        pipeline.expected_basic.away,
+                        4,
+                    ),
+                    "home_expected_after_venue": round(
+                        pipeline.expected_after_venue.home,
+                        4,
+                    ),
+                    "away_expected_after_venue": round(
+                        pipeline.expected_after_venue.away,
+                        4,
+                    ),
+                    "home_expected_after_standings": round(
+                        pipeline.expected_after_standings.home,
+                        4,
+                    ),
+                    "away_expected_after_standings": round(
+                        pipeline.expected_after_standings.away,
+                        4,
+                    ),
+                    "elo_adjustment_rate": round(
+                        pipeline.elo_adjustment_rate,
+                        6,
+                    ),
+                    "home_venue_adjustment_rate": round(
+                        pipeline.home_venue_adjustment_rate,
+                        6,
+                    ),
+                    "away_venue_adjustment_rate": round(
+                        pipeline.away_venue_adjustment_rate,
+                        6,
+                    ),
+                    "points_adjustment_rate": round(
+                        pipeline.standings.points_adjustment_rate,
+                        6,
+                    ),
+                    "goal_difference_adjustment_rate": round(
+                        pipeline.standings.goal_difference_adjustment_rate,
+                        6,
+                    ),
+                    "fallback_used": pipeline.fallback_used,
+                    "fallback_reason": pipeline.fallback_reason,
                 }
             )
 
-        except (ValueError, OverflowError) as error:
-            st.error(
-                f'第{match["match_number"]}試合で'
-                f'計算エラーが発生しました：{error}'
+        except Exception:
+            st.warning(
+                f'第{match["match_number"]}試合は入力データを確認できず、'
+                "予想を作成できませんでした。"
             )
 
     if results:
@@ -834,6 +1231,54 @@ if submitted:
             hide_index=True,
         )
 
+        st.header("Version4相当との比較")
+
+        comparison_df = pd.DataFrame(
+            [
+                {
+                    "試合番号": result["試合"],
+                    "対戦カード": result["対戦カード"],
+                    "Version4本命": result["version4_prediction"],
+                    "Version5本命": result["version5_prediction"],
+                    "Version4 1/0/2": (
+                        f'{result["version4_home_win"]:.1f} / '
+                        f'{result["version4_draw"]:.1f} / '
+                        f'{result["version4_away_win"]:.1f}'
+                    ),
+                    "Version5 1/0/2": (
+                        f'{result["1"]:.1f} / {result["0"]:.1f} / '
+                        f'{result["2"]:.1f}'
+                    ),
+                    "本命が変化したか": (
+                        "● 変更あり"
+                        if result["prediction_changed"]
+                        else "変更なし"
+                    ),
+                    "最大確率の変化": round(
+                        result["最高確率"]
+                        - result["version4_top_probability"],
+                        1,
+                    ),
+                }
+                for result in results
+            ]
+        )
+        changed_match_count = int(result_df["prediction_changed"].sum())
+        st.session_state["version5_changed_match_count"] = changed_match_count
+
+        if changed_match_count:
+            st.warning(
+                f"Version5で本命が変化した試合：{changed_match_count}試合"
+            )
+        else:
+            st.info("Version5で本命が変化した試合はありません。")
+
+        st.dataframe(
+            comparison_df,
+            width="stretch",
+            hide_index=True,
+        )
+
         st.header("試合別の詳細")
 
         for result in results:
@@ -860,7 +1305,8 @@ if submitted:
                 )
 
                 st.write(
-                    f'**本命予想：{result["本命"]}**'
+                    f'**Version5本命：{result["本命"]}** ／ '
+                    f'Version4本命：{result["version4_prediction"]}'
                 )
 
                 st.write(
@@ -873,26 +1319,83 @@ if submitted:
                 )
 
                 st.write(
-                    "Elo："
-                    f'ホーム {format_elo_value(result["home_elo"])} ／ '
-                    f'アウェイ {format_elo_value(result["away_elo"])} ／ '
-                    "差 "
-                    + (
-                        f'{result["elo_difference"]:+.1f}'
-                        if result["elo_difference"] is not None
-                        else "未取得"
-                    )
+                    "**基本データ**  "
+                    f'ホーム順位 {format_optional(result["home_rank"], 0)} ／ '
+                    f'アウェイ順位 {format_optional(result["away_rank"], 0)} ／ '
+                    f'ホーム勝点 {format_optional(result["home_points"], 0)} ／ '
+                    f'アウェイ勝点 {format_optional(result["away_points"], 0)} ／ '
+                    "得失点差 "
+                    f'{format_optional(result["home_goal_difference"], 0, True)}'
+                    " ／ "
+                    f'{format_optional(result["away_goal_difference"], 0, True)}'
                 )
 
                 st.write(
-                    "期待得点："
-                    f'補正前 {result["home_expected_before_elo"]:.2f}'
-                    f'－{result["away_expected_before_elo"]:.2f} ／ '
-                    f'補正後 {result["home_expected_after_elo"]:.2f}'
-                    f'－{result["away_expected_after_elo"]:.2f} ／ '
-                    "Elo補正 "
-                    f'{"ON" if result["elo_adjustment_enabled"] else "OFF"}'
+                    "**平均値（ホーム／アウェイ）**  "
+                    "通常直近5試合 得点 "
+                    f'{result["home_recent_scored_average"]:.2f}／'
+                    f'{result["away_recent_scored_average"]:.2f}、失点 '
+                    f'{result["home_recent_conceded_average"]:.2f}／'
+                    f'{result["away_recent_conceded_average"]:.2f}  '
+                    "加重平均 得点 "
+                    f'{format_optional(result["home_recent_weighted_scored"])}／'
+                    f'{format_optional(result["away_recent_weighted_scored"])}、'
+                    "失点 "
+                    f'{format_optional(result["home_recent_weighted_conceded"])}／'
+                    f'{format_optional(result["away_recent_weighted_conceded"])}'
                 )
+
+                st.write(
+                    "**会場別平均**  "
+                    "ホームチーム（ホーム）得点／失点 "
+                    f'{format_optional(result["home_home_scored_average"])}／'
+                    f'{format_optional(result["home_home_conceded_average"])}  '
+                    "アウェイチーム（アウェイ）得点／失点 "
+                    f'{format_optional(result["away_away_scored_average"])}／'
+                    f'{format_optional(result["away_away_conceded_average"])}'
+                )
+
+                st.write(
+                    "**期待得点（ホーム－アウェイ）**  "
+                    f'基本 {result["home_expected_basic"]:.2f}－'
+                    f'{result["away_expected_basic"]:.2f} ／ '
+                    f'会場別後 {result["home_expected_after_venue"]:.2f}－'
+                    f'{result["away_expected_after_venue"]:.2f} ／ '
+                    f'Elo後 {result["home_expected_after_elo"]:.2f}－'
+                    f'{result["away_expected_after_elo"]:.2f} ／ '
+                    f'順位等後 {result["home_expected_after_standings"]:.2f}－'
+                    f'{result["away_expected_after_standings"]:.2f} ／ '
+                    f'最終 {result["home_expected_after_version5"]:.2f}－'
+                    f'{result["away_expected_after_version5"]:.2f}'
+                )
+
+                st.write(
+                    "**補正率（ホーム側／アウェイ側）**  "
+                    f'Elo {result["elo_adjustment_rate"]:+.1%}／'
+                    f'{-result["elo_adjustment_rate"]:+.1%}、'
+                    "会場別 "
+                    f'{result["home_venue_adjustment_rate"]:+.1%}／'
+                    f'{result["away_venue_adjustment_rate"]:+.1%}、'
+                    f'勝点 {result["points_adjustment_rate"]:+.1%}／'
+                    f'{-result["points_adjustment_rate"]:+.1%}、'
+                    "得失点差 "
+                    f'{result["goal_difference_adjustment_rate"]:+.1%}／'
+                    f'{-result["goal_difference_adjustment_rate"]:+.1%}'
+                )
+
+                st.caption(
+                    "適用状態："
+                    f'Elo {"ON" if result["elo_adjustment_enabled"] else "OFF"} ／ '
+                    "会場別 "
+                    f'{"ON" if result["venue_adjustment_enabled"] else "OFF"} ／ '
+                    "直近重み "
+                    f'{"ON" if result["recent_weighting_enabled"] else "OFF"} ／ '
+                    "順位等 "
+                    f'{"ON" if result["standings_adjustment_enabled"] else "OFF"}'
+                )
+
+                if result["fallback_used"]:
+                    st.caption(result["fallback_reason"])
 
                 st.info(result["予想理由"])
 

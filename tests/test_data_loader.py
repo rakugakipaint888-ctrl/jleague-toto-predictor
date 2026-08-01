@@ -104,9 +104,7 @@ def schedule_row(
 
 
 def standings_html(rows: list[dict]) -> str:
-    return pd.DataFrame(rows, columns=["順位順位", "クラブ"]).to_html(
-        index=False
-    )
+    return pd.DataFrame(rows).to_html(index=False)
 
 
 class DataLoaderTest(unittest.TestCase):
@@ -237,7 +235,20 @@ class DataLoaderTest(unittest.TestCase):
                 + [schedule_row("26/06/06(土)", "仙台", "1-0", "山形")]
             ),
             "/j1/standings/": standings_html(
-                [{"順位順位": 2, "クラブ": "鹿島アントラーズ"}]
+                [
+                    {
+                        "順位順位": 2,
+                        "クラブ": "鹿島アントラーズ",
+                        "勝点勝点": 10,
+                        "試合試合数": 5,
+                        "勝勝": 3,
+                        "分分": 1,
+                        "負負": 1,
+                        "得点得点": 10,
+                        "失点失点": 5,
+                        "得失得失点": 5,
+                    }
+                ]
             ),
             "/j2/standings/": standings_html(
                 [{"順位順位": "-", "クラブ": "北海道コンサドーレ札幌"}]
@@ -271,6 +282,7 @@ class DataLoaderTest(unittest.TestCase):
                 side_effect=AssertionError("公式サイトへ再接続してはいけない"),
             ):
                 cached_result = load_matches(source)
+            cached_payload = cache_path.read_text(encoding="utf-8")
 
         self.assertTrue(result.is_loaded)
         self.assertEqual(len(request_log), 5)
@@ -282,6 +294,10 @@ class DataLoaderTest(unittest.TestCase):
         self.assertEqual(result.matches.iloc[0]["home_scored"], 2.0)
         self.assertEqual(result.matches.iloc[0]["home_conceded"], 1.0)
         self.assertEqual(result.matches.iloc[0]["home_rank"], 2)
+        self.assertEqual(result.matches.iloc[0]["home_points"], 10)
+        self.assertEqual(result.matches.iloc[0]["home_season_played"], 5)
+        self.assertEqual(result.matches.iloc[0]["home_season_wins"], 3)
+        self.assertEqual(result.matches.iloc[0]["home_goal_difference"], 5)
         self.assertEqual(result.matches.iloc[0]["home_wins"], 4)
         self.assertEqual(result.matches.iloc[0]["home_losses"], 1)
         self.assertEqual(len(result.completed_matches), 6)
@@ -302,6 +318,19 @@ class DataLoaderTest(unittest.TestCase):
             "2026-07-05 H vs 浦和レッズ 4-1",
             result.team_stats["鹿島アントラーズ"].recent_matches,
         )
+        stats = result.team_stats["鹿島アントラーズ"]
+        self.assertEqual(stats.points, 10)
+        self.assertEqual(stats.played, 5)
+        self.assertEqual(stats.goal_difference, 5)
+        self.assertTrue(stats.standings_available)
+        self.assertEqual(stats.recent_results[0].match_date.isoformat(), "2026-07-05")
+        self.assertEqual(stats.recent_results[0].opponent, "浦和レッズ")
+        self.assertEqual(stats.recent_results[0].scored, 4)
+        self.assertEqual(stats.recent_results[0].conceded, 1)
+        self.assertEqual(stats.recent_results[0].result, "勝")
+
+        self.assertIn('"standings"', cached_payload)
+        self.assertIn('"team_stats"', cached_payload)
 
     def test_pk_score_uses_score_before_shootout(self) -> None:
         self.assertEqual(data_loader._parse_score("1-1 (PK1-4)"), (1, 1))
