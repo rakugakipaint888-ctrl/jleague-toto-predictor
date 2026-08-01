@@ -51,13 +51,20 @@ Version6は`data/cache/`と`data/history/`を自動作成し、次を保存し�
   直近5試合、シーズン・会場別クラブ成績
 - `elo_ratings.json`：処理済み試合ID、全クラブElo、試合数、最終更新日
 - `toto_rounds.csv`：開催回、第1～13試合、試合日時、実結果、公式配当
+- `backtest_match_history.csv`：バックテスト用Jリーグ履歴の動的保存CSV
 - `../history/prediction_history.csv`：開催回・試合番号・Version別の予想履歴と
   的中率、Brier Score、Log Loss、Calibration、的中期待値、ROI
 
-これらは入力CSVではなく、取得失敗時の継続と検証履歴のための実行時ファイルです。
-Git管理対象外です。`toto_rounds.csv`は公式→保存CSV→現在データ→エラー表示の
-フォールバックで使います。`prediction_history.csv`を削除すると累積分析履歴も
-失われるため、必要に応じて分析タブのダウンロードボタンから保存してください。
+`data/reference/jleague_history_2024_2025.csv`は、公式取得と動的保存CSVの両方が
+利用できない初回起動でも直近1シーズン以上を検証できる読み取り用データです。
+実行時に更新されるファイルとは分離してGit管理します。
+
+`data/cache/`と`data/history/`のファイルは入力CSVではなく、取得失敗時の継続と
+検証履歴のための実行時ファイルで、Git管理対象外です。`data/reference/`だけは
+初回フォールバック用の読み取り専用データとしてGit管理します。`toto_rounds.csv`は
+公式→保存CSV→現在データ→エラー表示のフォールバックで使います。
+`prediction_history.csv`を削除すると累積分析履歴も失われるため、必要に応じて
+分析タブのダウンロードボタンから保存してください。
 
 ## 予想結果CSVのVersion4追加列
 

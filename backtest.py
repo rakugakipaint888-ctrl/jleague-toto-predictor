@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import csv
 from dataclasses import dataclass
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
 from data_loader import (
@@ -29,6 +31,26 @@ from metrics import (
 from model_pipeline import ModelOptions, TeamModelInput, predict_match
 from prediction_history import PredictionHistoryRecord
 from teams import TEAM_CATEGORY_BY_NAME, get_team_category, normalize_team_name
+
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+DEFAULT_BACKTEST_HISTORY_CACHE_PATH = (
+    PROJECT_ROOT / "data" / "cache" / "backtest_match_history.csv"
+)
+DEFAULT_BACKTEST_HISTORY_SEED_PATH = (
+    PROJECT_ROOT
+    / "data"
+    / "reference"
+    / "jleague_history_2024_2025.csv"
+)
+BACKTEST_HISTORY_COLUMNS = (
+    "match_time",
+    "home_team",
+    "away_team",
+    "home_goals",
+    "away_goals",
+    "category",
+)
 
 
 class BacktestError(RuntimeError):
@@ -135,6 +157,94 @@ def _deduplicate_matches(
     return sorted(unique.values(), key=lambda match: match.match_time)
 
 
+def save_historical_matches_csv(
+    matches: Sequence[OfficialMatch],
+    path: Path = DEFAULT_BACKTEST_HISTORY_CACHE_PATH,
+) -> bool:
+    """公式履歴を次回取得失敗時のCSVへ原子的に保存する。"""
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = path.with_suffix(path.suffix + ".tmp")
+        with temporary_path.open(
+            "w",
+            encoding="utf-8-sig",
+            newline="",
+        ) as csv_file:
+            writer = csv.DictWriter(
+                csv_file,
+                fieldnames=BACKTEST_HISTORY_COLUMNS,
+                lineterminator="\n",
+            )
+            writer.writeheader()
+            for match in _deduplicate_matches(matches):
+                writer.writerow(
+                    {
+                        "match_time": match.match_time.isoformat(),
+                        "home_team": match.home_team,
+                        "away_team": match.away_team,
+                        "home_goals": (
+                            "" if match.home_goals is None else match.home_goals
+                        ),
+                        "away_goals": (
+                            "" if match.away_goals is None else match.away_goals
+                        ),
+                        "category": match.category,
+                    }
+                )
+        temporary_path.replace(path)
+        return True
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def load_historical_matches_csv(path: Path) -> tuple[OfficialMatch, ...]:
+    """保存CSVを読み、壊れた行は無視して公式試合形式へ戻す。"""
+
+    if not path.exists():
+        return ()
+    try:
+        with path.open("r", encoding="utf-8-sig", newline="") as csv_file:
+            reader = csv.DictReader(csv_file)
+            if not set(BACKTEST_HISTORY_COLUMNS).issubset(
+                set(reader.fieldnames or ())
+            ):
+                return ()
+            matches = []
+            for row in reader:
+                try:
+                    match_time = datetime.fromisoformat(row["match_time"])
+                    if match_time.tzinfo is None:
+                        match_time = match_time.replace(tzinfo=JAPAN_TIMEZONE)
+                    home_team = normalize_team_name(row["home_team"])
+                    away_team = normalize_team_name(row["away_team"])
+                    home_goals = (
+                        int(row["home_goals"])
+                        if str(row["home_goals"]).strip()
+                        else None
+                    )
+                    away_goals = (
+                        int(row["away_goals"])
+                        if str(row["away_goals"]).strip()
+                        else None
+                    )
+                    matches.append(
+                        OfficialMatch(
+                            match_time=match_time,
+                            home_team=home_team,
+                            away_team=away_team,
+                            home_goals=home_goals,
+                            away_goals=away_goals,
+                            category=str(row["category"]).strip(),
+                        )
+                    )
+                except (KeyError, TypeError, ValueError):
+                    continue
+    except (OSError, UnicodeError, csv.Error):
+        return ()
+    return tuple(_deduplicate_matches(matches))
+
+
 def historical_schedule_pages(toto_round: TotoRound) -> tuple[OfficialSchedulePage, ...]:
     """対象日時点の現行大会と直前大会だけを返す。"""
 
@@ -182,24 +292,38 @@ def fetch_historical_matches(
     *,
     data_source: Optional[JLeagueOfficialDataSource] = None,
     fallback_matches: Sequence[OfficialMatch] = (),
+    cache_path: Path = DEFAULT_BACKTEST_HISTORY_CACHE_PATH,
+    seed_path: Path = DEFAULT_BACKTEST_HISTORY_SEED_PATH,
 ) -> tuple[OfficialMatch, ...]:
-    """対象回の直前大会を含むJリーグ公式履歴を取得する。"""
+    """公式→保存CSV→同梱CSV→現在データの順で履歴を統合する。"""
 
-    source = data_source or JLeagueOfficialDataSource()
-    try:
-        matches = [
-            match
-            for page in historical_schedule_pages(toto_round)
-            for match in source.fetch_schedule_page(page)
-        ]
-        if matches:
-            return tuple(_deduplicate_matches(matches))
-    except Exception:
-        # 公式履歴の取得失敗時は、Version5起動時に取得済みの履歴へ戻る。
-        pass
+    source = data_source or JLeagueOfficialDataSource(timeout_seconds=45.0)
+    official_matches = []
+    failed_page_count = 0
+    for page in historical_schedule_pages(toto_round):
+        try:
+            page_matches = source.fetch_schedule_page(page)
+        except Exception:
+            # 片方の年度だけ失敗しても、成功した年度は捨てない。
+            failed_page_count += 1
+            continue
+        official_matches.extend(page_matches)
 
-    if fallback_matches:
-        return tuple(_deduplicate_matches(fallback_matches))
+    if official_matches and failed_page_count == 0:
+        loaded = tuple(_deduplicate_matches(official_matches))
+        save_historical_matches_csv(loaded, cache_path)
+        return loaded
+
+    saved_matches = [
+        *load_historical_matches_csv(cache_path),
+        *load_historical_matches_csv(seed_path),
+    ]
+    combined_matches = _deduplicate_matches(
+        [*official_matches, *saved_matches, *fallback_matches]
+    )
+    if combined_matches:
+        save_historical_matches_csv(combined_matches, cache_path)
+        return tuple(combined_matches)
     raise BacktestError("バックテスト用Jリーグ履歴を取得できませんでした。")
 
 
@@ -479,6 +603,11 @@ def run_backtest(
 
     cutoff_at = backtest_cutoff(toto_round)
     completed = _completed_before(historical_matches, cutoff_at)
+    if not completed:
+        raise BacktestError(
+            "開催日時点より前のJリーグ試合履歴を取得できませんでした。"
+            "保存CSVまたは通信状態を確認してください。"
+        )
     if any(
         match.match_time.astimezone(JAPAN_TIMEZONE) >= cutoff_at
         for match in completed
