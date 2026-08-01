@@ -5,5 +5,5 @@ __pycache__/
 # テストツールが自動生成するキャッシュ
 .pytest_cache/
 
-# StreamlitのAPIキー（例示ファイルはGit管理する）
+# ローカルだけで使うStreamlit設定・秘密情報
 .streamlit/secrets.toml

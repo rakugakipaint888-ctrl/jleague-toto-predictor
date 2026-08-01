@@ -1,16 +1,17 @@
-"""Jリーグ試合データの取得と共通形式への変換を担当する。
+"""Jリーグ公式データ・CSVを共通形式で読み込む。
 
-``app.py`` は取得元を意識せず、このモジュールの ``load_matches`` だけを
-呼び出す。API固有のURL・認証・JSON変換は ``ApiDataSource`` に閉じ込め、
-APIを変更するときも予想画面やポアソン計算を変更しない構造にしている。
+``app.py`` は取得元を意識せず ``load_matches`` だけを呼び出す。
+公式サイト固有のURLとHTML解析は ``JLeagueOfficialDataSource`` に閉じ込め、
+取得元を将来変更するときも画面と予測ロジックへ影響させない。
 """
 
 from __future__ import annotations
 
-import os
+import re
 import unicodedata
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
+from io import StringIO
 from pathlib import Path
 from typing import Any, Optional, Protocol, Sequence
 from zoneinfo import ZoneInfo
@@ -18,21 +19,44 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import requests
 
+from teams import J1, J2, J3
+
 
 # --------------------------------------------------
-# 取得元と共通データ形式
+# 共通設定
 # --------------------------------------------------
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_MATCHES_PATH = PROJECT_ROOT / "data" / "matches.csv"
 
-API_BASE_URL = "https://v3.football.api-sports.io"
-API_KEY_ENV_NAME = "API_FOOTBALL_KEY"
-API_LEAGUE_NAMES = ("J1 League", "J2 League", "J3 League")
 JAPAN_TIMEZONE = ZoneInfo("Asia/Tokyo")
 
-FINISHED_STATUSES = {"FT", "AET", "PEN"}
-UPCOMING_STATUSES = {"NS", "TBD"}
+JLEAGUE_DATA_BASE_URL = "https://data.j-league.or.jp"
+JLEAGUE_SITE_BASE_URL = "https://www.jleague.jp"
+
+# 2026/27以降の通常シーズンで使われる大会区分ID。
+LEAGUE_FRAME_IDS = {"J1": 1, "J2": 2, "J3": 3}
+STANDINGS_SLUGS = {"J1": "j1", "J2": "j2", "J3": "j3"}
+
+# 2026年上半期だけ開催された百年構想リーグ。
+# 2026/27開幕直後の直近5試合を補うために利用する。
+VISION_LEAGUE_YEAR_ID = "20261"
+VISION_LEAGUE_FRAME_IDS = (35, 36)
+
+REQUEST_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (compatible; JLeagueTotoPersonalApp/3.0; personal-use)"
+    ),
+    "Accept-Language": "ja,en;q=0.5",
+}
+
+ALL_TEAM_NAMES = tuple(J1 + J2 + J3)
+ALL_TEAM_NAME_SET = set(ALL_TEAM_NAMES)
+
+
+# --------------------------------------------------
+# app.pyへ渡す列と初期値
+# --------------------------------------------------
 
 MATCH_COLUMNS = [
     "match_number",
@@ -45,9 +69,23 @@ MATCH_COLUMNS = [
     "away_conceded",
     "home_recent_matches",
     "away_recent_matches",
+    "home_rank",
+    "away_rank",
+    "home_played",
+    "home_wins",
+    "home_draws",
+    "home_losses",
+    "home_goals_for",
+    "home_goals_against",
+    "away_played",
+    "away_wins",
+    "away_draws",
+    "away_losses",
+    "away_goals_for",
+    "away_goals_against",
 ]
 
-# CSVやAPIに値がない場合は、Version 1と同じ初期値を使う。
+# データがない場合はVersion 1と同じ平均値を使う。
 DEFAULT_MATCH_VALUES = {
     "home_team": "",
     "away_team": "",
@@ -63,133 +101,135 @@ DEFAULT_MATCH_METADATA = {
     "away_recent_matches": "",
 }
 
+DEFAULT_MATCH_DETAILS = {
+    "home_rank": None,
+    "away_rank": None,
+    "home_played": 0,
+    "home_wins": 0,
+    "home_draws": 0,
+    "home_losses": 0,
+    "home_goals_for": 0,
+    "home_goals_against": 0,
+    "away_played": 0,
+    "away_wins": 0,
+    "away_draws": 0,
+    "away_losses": 0,
+    "away_goals_for": 0,
+    "away_goals_against": 0,
+}
+
+RANK_COLUMNS = ("home_rank", "away_rank")
+RECORD_COLUMNS = tuple(
+    column
+    for column in DEFAULT_MATCH_DETAILS
+    if column not in RANK_COLUMNS
+)
+
 
 # --------------------------------------------------
-# API-Football名からteams.pyの日本語名への変換
+# J. League Data Siteの略称をteams.pyへそろえる
 # --------------------------------------------------
 
-TEAM_NAME_ALIASES = {
+OFFICIAL_TEAM_ABBREVIATIONS = {
     # J1
-    "鹿島アントラーズ": ("Kashima Antlers", "Kashima"),
-    "水戸ホーリーホック": ("Mito Hollyhock",),
-    "浦和レッズ": ("Urawa", "Urawa Red Diamonds", "Urawa Reds"),
-    "ジェフユナイテッド千葉": (
-        "JEF United Chiba",
-        "JEF United",
-        "JEF Chiba",
-    ),
-    "柏レイソル": ("Kashiwa Reysol",),
-    "ＦＣ東京": ("FC Tokyo",),
-    "東京ヴェルディ": ("Tokyo Verdy",),
-    "ＦＣ町田ゼルビア": ("Machida Zelvia", "FC Machida Zelvia"),
-    "川崎フロンターレ": ("Kawasaki Frontale",),
-    "横浜Ｆ・マリノス": (
-        "Yokohama F. Marinos",
-        "Yokohama F Marinos",
-        "Yokohama Marinos",
-    ),
-    "清水エスパルス": ("Shimizu S-pulse", "Shimizu S-Pulse"),
-    "名古屋グランパス": ("Nagoya Grampus", "Nagoya Grampus Eight"),
-    "京都サンガF.C.": ("Kyoto Sanga", "Kyoto Sanga FC"),
-    "ガンバ大阪": ("Gamba Osaka",),
-    "セレッソ大阪": ("Cerezo Osaka",),
-    "ヴィッセル神戸": ("Vissel Kobe",),
-    "ファジアーノ岡山": ("Fagiano Okayama",),
-    "サンフレッチェ広島": ("Sanfrecce Hiroshima",),
-    "アビスパ福岡": ("Avispa Fukuoka",),
-    "Ｖ・ファーレン長崎": ("V-Varen Nagasaki", "V Varen Nagasaki"),
+    "鹿島": "鹿島アントラーズ",
+    "水戸": "水戸ホーリーホック",
+    "浦和": "浦和レッズ",
+    "千葉": "ジェフユナイテッド千葉",
+    "柏": "柏レイソル",
+    "FC東京": "ＦＣ東京",
+    "東京Ｖ": "東京ヴェルディ",
+    "町田": "ＦＣ町田ゼルビア",
+    "川崎Ｆ": "川崎フロンターレ",
+    "横浜FM": "横浜Ｆ・マリノス",
+    "清水": "清水エスパルス",
+    "名古屋": "名古屋グランパス",
+    "京都": "京都サンガF.C.",
+    "Ｇ大阪": "ガンバ大阪",
+    "Ｃ大阪": "セレッソ大阪",
+    "神戸": "ヴィッセル神戸",
+    "岡山": "ファジアーノ岡山",
+    "広島": "サンフレッチェ広島",
+    "福岡": "アビスパ福岡",
+    "長崎": "Ｖ・ファーレン長崎",
     # J2
-    "北海道コンサドーレ札幌": (
-        "Consadole Sapporo",
-        "Hokkaido Consadole Sapporo",
-    ),
-    "ヴァンラーレ八戸": ("Vanraure Hachinohe",),
-    "ベガルタ仙台": ("Vegalta Sendai",),
-    "ブラウブリッツ秋田": ("Blaublitz Akita",),
-    "モンテディオ山形": ("Montedio Yamagata",),
-    "いわきＦＣ": ("Iwaki", "Iwaki FC"),
-    "栃木シティ": ("Tochigi City", "Tochigi City FC"),
-    "ＲＢ大宮アルディージャ": (
-        "RB Omiya Ardija",
-        "Omiya Ardija",
-    ),
-    "横浜ＦＣ": ("Yokohama FC",),
-    "湘南ベルマーレ": ("Shonan Bellmare",),
-    "ヴァンフォーレ甲府": ("Ventforet Kofu",),
-    "アルビレックス新潟": ("Albirex Niigata",),
-    "カターレ富山": ("Kataller Toyama",),
-    "ジュビロ磐田": ("Jubilo Iwata", "Júbilo Iwata"),
-    "藤枝ＭＹＦＣ": ("Fujieda MYFC",),
-    "徳島ヴォルティス": ("Tokushima Vortis",),
-    "ＦＣ今治": ("FC Imabari",),
-    "サガン鳥栖": ("Sagan Tosu",),
-    "大分トリニータ": ("Oita Trinita",),
-    "テゲバジャーロ宮崎": ("Tegevajaro Miyazaki",),
+    "札幌": "北海道コンサドーレ札幌",
+    "八戸": "ヴァンラーレ八戸",
+    "仙台": "ベガルタ仙台",
+    "秋田": "ブラウブリッツ秋田",
+    "山形": "モンテディオ山形",
+    "いわき": "いわきＦＣ",
+    "栃木Ｃ": "栃木シティ",
+    "大宮": "ＲＢ大宮アルディージャ",
+    "横浜FC": "横浜ＦＣ",
+    "湘南": "湘南ベルマーレ",
+    "甲府": "ヴァンフォーレ甲府",
+    "新潟": "アルビレックス新潟",
+    "富山": "カターレ富山",
+    "磐田": "ジュビロ磐田",
+    "藤枝": "藤枝ＭＹＦＣ",
+    "徳島": "徳島ヴォルティス",
+    "今治": "ＦＣ今治",
+    "鳥栖": "サガン鳥栖",
+    "大分": "大分トリニータ",
+    "宮崎": "テゲバジャーロ宮崎",
     # J3
-    "福島ユナイテッドＦＣ": ("Fukushima United", "Fukushima United FC"),
-    "栃木ＳＣ": ("Tochigi SC",),
-    "ザスパ群馬": (
-        "Thespa Gunma",
-        "Thespakusatsu Gunma",
-        "ThespaKusatsu Gunma",
-    ),
-    "ＳＣ相模原": ("SC Sagamihara",),
-    "松本山雅ＦＣ": ("Matsumoto Yamaga", "Matsumoto Yamaga FC"),
-    "ＡＣ長野パルセイロ": ("AC Nagano Parceiro", "Nagano Parceiro"),
-    "ツエーゲン金沢": ("Zweigen Kanazawa",),
-    "ＦＣ岐阜": ("FC Gifu",),
-    "レイラック滋賀ＦＣ": (
-        "Reilac Shiga",
-        "Reilac Shiga FC",
-        "MIO Biwako Shiga",
-    ),
-    "ＦＣ大阪": ("FC Osaka",),
-    "奈良クラブ": ("Nara Club",),
-    "ガイナーレ鳥取": ("Gainare Tottori",),
-    "レノファ山口ＦＣ": ("Renofa Yamaguchi", "Renofa Yamaguchi FC"),
-    "カマタマーレ讃岐": ("Kamatamare Sanuki",),
-    "愛媛ＦＣ": ("Ehime FC",),
-    "高知ユナイテッドＳＣ": ("Kochi United", "Kochi United SC"),
-    "ギラヴァンツ北九州": ("Giravanz Kitakyushu",),
-    "ロアッソ熊本": ("Roasso Kumamoto",),
-    "鹿児島ユナイテッドＦＣ": (
-        "Kagoshima United",
-        "Kagoshima United FC",
-    ),
-    "ＦＣ琉球": ("FC Ryukyu",),
+    "福島": "福島ユナイテッドＦＣ",
+    "栃木SC": "栃木ＳＣ",
+    "群馬": "ザスパ群馬",
+    "相模原": "ＳＣ相模原",
+    "松本": "松本山雅ＦＣ",
+    "長野": "ＡＣ長野パルセイロ",
+    "金沢": "ツエーゲン金沢",
+    "岐阜": "ＦＣ岐阜",
+    "滋賀": "レイラック滋賀ＦＣ",
+    "FC大阪": "ＦＣ大阪",
+    "奈良": "奈良クラブ",
+    "鳥取": "ガイナーレ鳥取",
+    "山口": "レノファ山口ＦＣ",
+    "讃岐": "カマタマーレ讃岐",
+    "愛媛": "愛媛ＦＣ",
+    "高知": "高知ユナイテッドＳＣ",
+    "北九州": "ギラヴァンツ北九州",
+    "熊本": "ロアッソ熊本",
+    "鹿児島": "鹿児島ユナイテッドＦＣ",
+    "琉球": "ＦＣ琉球",
 }
 
 
-def normalize_team_name(team_name: str) -> str:
-    """表記ゆれ比較用に、英数字と文字だけの小文字へそろえる。"""
+def normalize_text(value: Any) -> str:
+    """表記ゆれ比較用に空白を除いたNFKC文字列へそろえる。"""
 
-    normalized = unicodedata.normalize("NFKD", str(team_name)).casefold()
-    return "".join(character for character in normalized if character.isalnum())
+    if value is None or pd.isna(value):
+        return ""
 
-
-API_TEAM_NAME_MAP = {
-    normalize_team_name(alias): japanese_name
-    for japanese_name, aliases in TEAM_NAME_ALIASES.items()
-    for alias in (japanese_name, *aliases)
-}
+    normalized = unicodedata.normalize("NFKC", str(value)).strip()
+    return "".join(character for character in normalized if not character.isspace())
 
 
-def translate_api_team_name(team_name: str) -> str:
-    """API-Footballのクラブ名をteams.pyと同じ日本語名へ変換する。"""
-
-    cleaned_name = str(team_name).strip()
-    return API_TEAM_NAME_MAP.get(
-        normalize_team_name(cleaned_name),
-        cleaned_name,
+OFFICIAL_TEAM_NAME_MAP = {
+    normalize_text(alias): canonical_name
+    for alias, canonical_name in (
+        *OFFICIAL_TEAM_ABBREVIATIONS.items(),
+        *((team_name, team_name) for team_name in ALL_TEAM_NAMES),
     )
+}
+
+
+def translate_official_team_name(team_name: Any) -> str:
+    """公式サイトの略称・正式名をteams.pyのクラブ名へ変換する。"""
+
+    cleaned_name = normalize_text(team_name)
+    return OFFICIAL_TEAM_NAME_MAP.get(cleaned_name, str(team_name).strip())
 
 
 # --------------------------------------------------
 # データ取得元の共通インターフェース
 # --------------------------------------------------
 
+
 class MatchDataSource(Protocol):
-    """CSV・APIなど、すべての取得元が備える共通インターフェース。"""
+    """CSV・公式サイトなど、すべての取得元が備える共通形式。"""
 
     @property
     def name(self) -> str:
@@ -204,7 +244,7 @@ class MatchDataSourceError(RuntimeError):
 
 
 class MatchDataNotFoundError(MatchDataSourceError):
-    """APIキーやCSVなどが存在しない場合のエラー。"""
+    """CSVや利用できる公式試合が存在しない場合のエラー。"""
 
 
 class MatchDataFormatError(MatchDataSourceError):
@@ -212,12 +252,74 @@ class MatchDataFormatError(MatchDataSourceError):
 
 
 @dataclass(frozen=True)
+class VenueRecord:
+    """ホームまたはアウェイに限定した勝敗・得失点。"""
+
+    played: int = 0
+    wins: int = 0
+    draws: int = 0
+    losses: int = 0
+    goals_for: int = 0
+    goals_against: int = 0
+
+    @property
+    def label(self) -> str:
+        """画面表示用の短い成績文字列を返す。"""
+
+        if self.played <= 0:
+            return "未取得"
+
+        return (
+            f"{self.played}試合 {self.wins}勝{self.draws}分{self.losses}敗 "
+            f"{self.goals_for}得点{self.goals_against}失点"
+        )
+
+
+@dataclass(frozen=True)
 class TeamRecentStats:
-    """1クラブの直近試合と、そこから算出した平均値。"""
+    """1クラブの直近成績・順位・会場別成績。"""
 
     average_scored: float
     average_conceded: float
     recent_matches: tuple[str, ...] = ()
+    rank: Optional[int] = None
+    home_record: VenueRecord = field(default_factory=VenueRecord)
+    away_record: VenueRecord = field(default_factory=VenueRecord)
+
+
+@dataclass(frozen=True)
+class OfficialMatch:
+    """公式HTMLから取り出した1試合。"""
+
+    match_time: datetime
+    home_team: str
+    away_team: str
+    home_goals: Optional[int] = None
+    away_goals: Optional[int] = None
+
+    @property
+    def is_completed(self) -> bool:
+        return self.home_goals is not None and self.away_goals is not None
+
+
+@dataclass(frozen=True)
+class OfficialSchedulePage:
+    """J. League Data Siteの日程・結果ページ指定。"""
+
+    year_id: str
+    frame_ids: tuple[int, ...]
+
+    @property
+    def url(self) -> str:
+        frame_parameters = "&".join(
+            f"competition_frame_ids={frame_id}"
+            for frame_id in self.frame_ids
+        )
+        return (
+            f"{JLEAGUE_DATA_BASE_URL}/SFMS01/search"
+            f"?competition_years={self.year_id}"
+            f"&{frame_parameters}"
+        )
 
 
 @dataclass(frozen=True)
@@ -237,384 +339,538 @@ class CsvMatchDataSource:
             )
 
         try:
-            # Excelで保存したUTF-8 CSVのBOMにも対応する。
             return pd.read_csv(self.path, encoding="utf-8-sig")
         except pd.errors.EmptyDataError as error:
             raise MatchDataFormatError("matches.csv が空です。") from error
-        except (
-            OSError,
-            UnicodeError,
-            pd.errors.ParserError,
-        ) as error:
+        except (OSError, UnicodeError, pd.errors.ParserError) as error:
             raise MatchDataSourceError(
                 f"matches.csv を読み込めませんでした：{error}"
             ) from error
 
 
 @dataclass(frozen=True)
-class ApiDataSource:
-    """API-FootballからJ1・J2・J3の試合データを取得する。
+class JLeagueOfficialDataSource:
+    """Jリーグ公式の公開ページから試合・順位データを取得する。
 
-    API固有の認証、URL、JSON項目名、クラブ名変換はこのクラス内に限定する。
-    別APIへ変更するときは、このクラスを同じ ``name`` と ``load()`` を持つ
-    実装へ差し替えれば、``app.py`` と計算処理はそのまま利用できる。
+    日程・結果は ``J. League Data Site``、順位は ``J.LEAGUE.jp`` を使う。
+    認証情報や有料APIは使用しない。HTML固有処理はすべてこのクラス内に置く。
     """
 
-    api_key: Optional[str] = None
-    base_url: str = API_BASE_URL
-    timeout_seconds: float = 10.0
+    timeout_seconds: float = 15.0
     now: Optional[datetime] = None
 
     @property
     def name(self) -> str:
-        return "API-Football"
+        return "Jリーグ公式データ"
 
-    def _get_api_key(self) -> str:
-        api_key = (self.api_key or os.getenv(API_KEY_ENV_NAME, "")).strip()
+    def _reference_time(self) -> datetime:
+        reference = self.now or datetime.now(JAPAN_TIMEZONE)
 
-        if not api_key:
-            raise MatchDataNotFoundError(
-                f"環境変数 {API_KEY_ENV_NAME} が設定されていません。"
+        if reference.tzinfo is None:
+            return reference.replace(tzinfo=JAPAN_TIMEZONE)
+
+        return reference.astimezone(JAPAN_TIMEZONE)
+
+    def _current_season_start_year(self) -> int:
+        """秋春制シーズンの開始年を返す。"""
+
+        reference = self._reference_time()
+        return reference.year if reference.month >= 7 else reference.year - 1
+
+    def _current_schedule_pages(self) -> tuple[OfficialSchedulePage, ...]:
+        season_year = str(self._current_season_start_year())
+        return (
+            OfficialSchedulePage(
+                season_year,
+                tuple(LEAGUE_FRAME_IDS.values()),
+            ),
+        )
+
+    def _history_schedule_pages(self) -> tuple[OfficialSchedulePage, ...]:
+        season_year = self._current_season_start_year()
+
+        if season_year == 2026:
+            return (
+                OfficialSchedulePage(
+                    VISION_LEAGUE_YEAR_ID,
+                    VISION_LEAGUE_FRAME_IDS,
+                ),
             )
 
-        return api_key
+        previous_year = str(season_year - 1)
+        return (
+            OfficialSchedulePage(
+                previous_year,
+                tuple(LEAGUE_FRAME_IDS.values()),
+            ),
+        )
 
-    def _request(self, endpoint: str, params: dict[str, Any]) -> list[dict]:
-        """APIを1回呼び出し、``response`` 配列だけを返す。"""
-
+    def _request_html(self, url: str) -> str:
         try:
             response = requests.get(
-                f"{self.base_url.rstrip('/')}/{endpoint.lstrip('/')}",
-                headers={"x-apisports-key": self._get_api_key()},
-                params=params,
+                url,
+                headers=REQUEST_HEADERS,
                 timeout=self.timeout_seconds,
             )
             response.raise_for_status()
         except requests.RequestException as error:
             raise MatchDataSourceError(
-                "API-Footballへ接続できませんでした。"
+                "Jリーグ公式サイトへ接続できませんでした。"
             ) from error
 
+        if not response.text.strip():
+            raise MatchDataFormatError("Jリーグ公式ページが空です。")
+
+        return response.text
+
+    def _read_html_tables(self, html: str) -> list[pd.DataFrame]:
         try:
-            payload = response.json()
-        except ValueError as error:
+            return pd.read_html(StringIO(html))
+        except (ImportError, ValueError) as error:
             raise MatchDataFormatError(
-                "API-Footballの応答がJSONではありません。"
+                "Jリーグ公式ページの表を解析できませんでした。"
             ) from error
 
-        if not isinstance(payload, dict):
-            raise MatchDataFormatError(
-                "API-Footballの応答形式が想定と異なります。"
-            )
-
-        api_errors = payload.get("errors")
-        if api_errors:
-            raise MatchDataSourceError(
-                "API-Footballがリクエストを受け付けませんでした。"
-            )
-
-        response_items = payload.get("response")
-        if not isinstance(response_items, list):
-            raise MatchDataFormatError(
-                "API-Footballのresponse形式が想定と異なります。"
-            )
-
-        return response_items
-
-    def _get_current_leagues(self) -> list[tuple[int, int]]:
-        """J1・J2・J3の（リーグID、現在シーズン年）を返す。"""
-
-        league_items = self._request(
-            "leagues",
-            {"country": "Japan", "current": "true"},
+    def _fetch_schedule_page(
+        self,
+        page: OfficialSchedulePage,
+    ) -> list[OfficialMatch]:
+        tables = self._read_html_tables(self._request_html(page.url))
+        schedule_table = _find_table(
+            tables,
+            required_headers=("試合日", "ホーム", "スコア", "アウェイ"),
         )
 
-        leagues = []
-
-        for item in league_items:
-            league = item.get("league", {})
-            league_name = league.get("name")
-
-            if league_name not in API_LEAGUE_NAMES:
-                continue
-
-            current_seasons = [
-                season
-                for season in item.get("seasons", [])
-                if season.get("current") is True
-            ]
-
-            if not current_seasons:
-                continue
-
-            league_id = league.get("id")
-            season_year = current_seasons[-1].get("year")
-
-            if isinstance(league_id, int) and isinstance(season_year, int):
-                leagues.append((league_id, season_year))
-
-        if not leagues:
-            raise MatchDataNotFoundError(
-                "API-Footballに現在のJ1・J2・J3が見つかりません。"
+        if schedule_table is None:
+            raise MatchDataFormatError(
+                "J. League Data Siteの日程表が見つかりません。"
             )
 
-        return leagues
+        return _parse_schedule_table(schedule_table)
 
-    def _get_reference_time(self) -> datetime:
-        reference_time = self.now or datetime.now(timezone.utc)
+    def _fetch_rankings(self) -> dict[str, int]:
+        """順位表を取得する。開幕前や一時失敗時は順位なしで継続する。"""
 
-        if reference_time.tzinfo is None:
-            return reference_time.replace(tzinfo=timezone.utc)
+        rankings: dict[str, int] = {}
 
-        return reference_time
+        for category, slug in STANDINGS_SLUGS.items():
+            url = f"{JLEAGUE_SITE_BASE_URL}/{slug}/standings/"
+
+            try:
+                tables = self._read_html_tables(self._request_html(url))
+                standings_table = _find_table(
+                    tables,
+                    required_headers=("順位", "クラブ"),
+                )
+                if standings_table is not None:
+                    rankings.update(_parse_standings_table(standings_table))
+            except MatchDataSourceError:
+                # 順位は補助情報。試合と直近成績を取得できれば予想は続行する。
+                continue
+
+        return rankings
 
     def load(self) -> pd.DataFrame:
-        """次の試合と、全クラブの直近5試合平均を返す。"""
+        """今後の試合と、全クラブの直近5試合統計を返す。"""
 
         try:
-            leagues = self._get_current_leagues()
-            current_fixtures: list[dict] = []
-            historical_fixtures: list[dict] = []
+            current_matches = [
+                match
+                for page in self._current_schedule_pages()
+                for match in self._fetch_schedule_page(page)
+            ]
 
-            # シーズン切替直後にも5試合を確保しやすいよう、当季と前季を取得。
-            for league_id, season_year in leagues:
-                current_season_items = self._request(
-                    "fixtures",
-                    {"league": league_id, "season": season_year},
+            if not current_matches:
+                raise MatchDataNotFoundError(
+                    "Jリーグ公式サイトに試合データがありません。"
                 )
-                try:
-                    previous_season_items = self._request(
-                        "fixtures",
-                        {"league": league_id, "season": season_year - 1},
-                    )
-                except MatchDataSourceError:
-                    # 無料枠で前季を取得できなくても、当季データは利用する。
-                    previous_season_items = []
 
-                current_fixtures.extend(current_season_items)
-                historical_fixtures.extend(current_season_items)
-                historical_fixtures.extend(previous_season_items)
+            all_matches = list(current_matches)
+            current_completed = [
+                match for match in current_matches if match.is_completed
+            ]
 
-            team_stats = self._calculate_team_stats(historical_fixtures)
-            return self._create_upcoming_matches(current_fixtures, team_stats)
+            # 現行シーズンだけで全クラブ5試合に満たない時期は前大会で補う。
+            if _needs_history(current_completed):
+                for page in self._history_schedule_pages():
+                    all_matches.extend(self._fetch_schedule_page(page))
+
+            completed_matches = _deduplicate_matches(
+                match for match in all_matches if match.is_completed
+            )
+            rankings = self._fetch_rankings()
+            team_stats = _calculate_team_stats(completed_matches, rankings)
+
+            return _create_upcoming_matches(
+                current_matches,
+                team_stats,
+                self._reference_time(),
+            )
         except MatchDataSourceError:
             raise
         except (KeyError, TypeError, ValueError) as error:
             raise MatchDataFormatError(
-                "API-Footballの試合データ形式が想定と異なります。"
+                "Jリーグ公式データの形式が想定と異なります。"
             ) from error
 
-    def _calculate_team_stats(
-        self,
-        fixture_items: Sequence[dict],
-    ) -> dict[str, TeamRecentStats]:
-        """完了済み試合をクラブ別に並べ、直近5試合平均を算出する。"""
 
-        completed_matches: dict[str, list[dict[str, Any]]] = {}
+# --------------------------------------------------
+# 公式HTMLの変換
+# --------------------------------------------------
 
-        for item in fixture_items:
-            fixture = item.get("fixture", {})
-            status = fixture.get("status", {}).get("short")
-            goals = item.get("goals", {})
-            home_goals = goals.get("home")
-            away_goals = goals.get("away")
 
-            if (
-                status not in FINISHED_STATUSES
-                or not isinstance(home_goals, (int, float))
-                or not isinstance(away_goals, (int, float))
-            ):
-                continue
+def _normalized_headers(table: pd.DataFrame) -> dict[str, Any]:
+    return {normalize_text(column): column for column in table.columns}
 
-            match_time = parse_api_datetime(fixture.get("date"))
-            teams = item.get("teams", {})
-            home_team = translate_api_team_name(
-                teams.get("home", {}).get("name", "")
+
+def _find_column(table: pd.DataFrame, keyword: str) -> Optional[Any]:
+    normalized_keyword = normalize_text(keyword)
+
+    for normalized_header, original_header in _normalized_headers(table).items():
+        if normalized_keyword in normalized_header:
+            return original_header
+
+    return None
+
+
+def _find_table(
+    tables: Sequence[pd.DataFrame],
+    required_headers: Sequence[str],
+) -> Optional[pd.DataFrame]:
+    for table in tables:
+        if all(_find_column(table, header) is not None for header in required_headers):
+            return table
+
+    return None
+
+
+def _parse_official_datetime(date_value: Any, kickoff_value: Any) -> datetime:
+    date_text = normalize_text(date_value)
+    date_match = re.search(r"(\d{2})/(\d{2})/(\d{2})", date_text)
+
+    if not date_match:
+        raise MatchDataFormatError("公式データの試合日を解析できません。")
+
+    year, month, day = (int(part) for part in date_match.groups())
+    year += 2000
+
+    kickoff_text = normalize_text(kickoff_value)
+    kickoff_match = re.search(r"(\d{1,2}):(\d{2})", kickoff_text)
+
+    if kickoff_match:
+        hour, minute = (int(part) for part in kickoff_match.groups())
+    else:
+        # 未定の試合は同日の確定時刻より後ろへ並べる。
+        hour, minute = 23, 59
+
+    return datetime(year, month, day, hour, minute, tzinfo=JAPAN_TIMEZONE)
+
+
+def _parse_score(score_value: Any) -> Optional[tuple[int, int]]:
+    score_text = normalize_text(score_value)
+    score_match = re.match(r"^(\d+)\s*[-−ー]\s*(\d+)", score_text)
+
+    if not score_match:
+        return None
+
+    return tuple(int(part) for part in score_match.groups())
+
+
+def _parse_schedule_table(table: pd.DataFrame) -> list[OfficialMatch]:
+    date_column = _find_column(table, "試合日")
+    kickoff_column = _find_column(table, "K/O時刻")
+    home_column = _find_column(table, "ホーム")
+    score_column = _find_column(table, "スコア")
+    away_column = _find_column(table, "アウェイ")
+
+    if None in (date_column, home_column, score_column, away_column):
+        raise MatchDataFormatError("日程表の必須列が見つかりません。")
+
+    matches = []
+
+    for _, row in table.iterrows():
+        home_team = translate_official_team_name(row.get(home_column, ""))
+        away_team = translate_official_team_name(row.get(away_column, ""))
+
+        if home_team not in ALL_TEAM_NAME_SET or away_team not in ALL_TEAM_NAME_SET:
+            continue
+
+        try:
+            match_time = _parse_official_datetime(
+                row.get(date_column, ""),
+                row.get(kickoff_column, "") if kickoff_column is not None else "",
             )
-            away_team = translate_api_team_name(
-                teams.get("away", {}).get("name", "")
+        except MatchDataFormatError:
+            continue
+
+        score = _parse_score(row.get(score_column, ""))
+        home_goals, away_goals = score if score is not None else (None, None)
+
+        matches.append(
+            OfficialMatch(
+                match_time=match_time,
+                home_team=home_team,
+                away_team=away_team,
+                home_goals=home_goals,
+                away_goals=away_goals,
             )
+        )
 
-            if not home_team or not away_team:
-                continue
+    return matches
 
-            completed_matches.setdefault(home_team, []).append(
-                {
-                    "date": match_time,
-                    "opponent": away_team,
-                    "venue": "H",
-                    "scored": float(home_goals),
-                    "conceded": float(away_goals),
-                }
-            )
-            completed_matches.setdefault(away_team, []).append(
-                {
-                    "date": match_time,
-                    "opponent": home_team,
-                    "venue": "A",
-                    "scored": float(away_goals),
-                    "conceded": float(home_goals),
-                }
-            )
 
-        team_stats: dict[str, TeamRecentStats] = {}
+def _parse_standings_table(table: pd.DataFrame) -> dict[str, int]:
+    rank_column = _find_column(table, "順位")
+    club_column = _find_column(table, "クラブ")
 
-        for team_name, matches in completed_matches.items():
-            recent_matches = sorted(
-                matches,
-                key=lambda match: match["date"],
-                reverse=True,
-            )[:5]
+    if rank_column is None or club_column is None:
+        return {}
 
-            if not recent_matches:
-                continue
+    rankings = {}
 
-            match_count = len(recent_matches)
-            average_scored = round(
-                sum(match["scored"] for match in recent_matches) / match_count,
-                2,
-            )
-            average_conceded = round(
-                sum(match["conceded"] for match in recent_matches) / match_count,
-                2,
-            )
-            descriptions = tuple(
-                format_recent_match(match) for match in recent_matches
-            )
+    for _, row in table.iterrows():
+        team_name = translate_official_team_name(row.get(club_column, ""))
+        rank = pd.to_numeric(row.get(rank_column), errors="coerce")
 
-            team_stats[team_name] = TeamRecentStats(
-                average_scored=average_scored,
-                average_conceded=average_conceded,
-                recent_matches=descriptions,
-            )
+        if team_name in ALL_TEAM_NAME_SET and not pd.isna(rank):
+            rankings[team_name] = int(rank)
 
-        return team_stats
-
-    def _create_upcoming_matches(
-        self,
-        fixture_items: Sequence[dict],
-        team_stats: dict[str, TeamRecentStats],
-    ) -> pd.DataFrame:
-        """未開催試合を日付順に並べ、共通列のDataFrameへ変換する。"""
-
-        reference_time = self._get_reference_time()
-        upcoming = []
-
-        for item in fixture_items:
-            fixture = item.get("fixture", {})
-            status = fixture.get("status", {}).get("short")
-
-            if status not in UPCOMING_STATUSES:
-                continue
-
-            match_time = parse_api_datetime(fixture.get("date"))
-            if match_time < reference_time:
-                continue
-
-            teams = item.get("teams", {})
-            home_team = translate_api_team_name(
-                teams.get("home", {}).get("name", "")
-            )
-            away_team = translate_api_team_name(
-                teams.get("away", {}).get("name", "")
-            )
-
-            if not home_team or not away_team:
-                continue
-
-            upcoming.append((match_time, home_team, away_team))
-
-        rows = []
-
-        for match_number, (match_time, home_team, away_team) in enumerate(
-            sorted(upcoming, key=lambda match: match[0]),
-            start=1,
-        ):
-            home_stats = team_stats.get(home_team)
-            away_stats = team_stats.get(away_team)
-
-            rows.append(
-                {
-                    "match_number": match_number,
-                    "match_date": match_time.astimezone(
-                        JAPAN_TIMEZONE
-                    ).strftime("%Y-%m-%d"),
-                    "home_team": home_team,
-                    "away_team": away_team,
-                    "home_scored": (
-                        home_stats.average_scored
-                        if home_stats
-                        else DEFAULT_MATCH_VALUES["home_scored"]
-                    ),
-                    "home_conceded": (
-                        home_stats.average_conceded
-                        if home_stats
-                        else DEFAULT_MATCH_VALUES["home_conceded"]
-                    ),
-                    "away_scored": (
-                        away_stats.average_scored
-                        if away_stats
-                        else DEFAULT_MATCH_VALUES["away_scored"]
-                    ),
-                    "away_conceded": (
-                        away_stats.average_conceded
-                        if away_stats
-                        else DEFAULT_MATCH_VALUES["away_conceded"]
-                    ),
-                    "home_recent_matches": join_recent_matches(home_stats),
-                    "away_recent_matches": join_recent_matches(away_stats),
-                }
-            )
-
-        return pd.DataFrame(rows, columns=MATCH_COLUMNS)
+    return rankings
 
 
 # --------------------------------------------------
-# APIデータの小さな変換関数
+# 公式試合からクラブ統計を計算
 # --------------------------------------------------
 
-def parse_api_datetime(value: Any) -> datetime:
-    """APIのISO 8601日時をタイムゾーン付きdatetimeへ変換する。"""
 
-    if not isinstance(value, str) or not value.strip():
-        raise MatchDataFormatError("試合日時がありません。")
-
-    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-
-    return parsed
-
-
-def format_recent_match(match: dict[str, Any]) -> str:
-    """1試合を日本時間の日付・会場・相手・スコアに整形する。"""
-
-    match_date = match["date"].astimezone(JAPAN_TIMEZONE).strftime("%Y-%m-%d")
-    scored = int(match["scored"])
-    conceded = int(match["conceded"])
+def _match_identity(match: OfficialMatch) -> tuple[Any, ...]:
     return (
-        f'{match_date} {match["venue"]} vs {match["opponent"]} '
-        f"{scored}-{conceded}"
+        match.match_time,
+        match.home_team,
+        match.away_team,
+        match.home_goals,
+        match.away_goals,
     )
 
 
-def join_recent_matches(stats: Optional[TeamRecentStats]) -> str:
-    """CSVでも扱いやすいよう、直近試合を1つの文字列へまとめる。"""
+def _deduplicate_matches(matches: Sequence[OfficialMatch]) -> list[OfficialMatch]:
+    unique_matches = {}
 
+    for match in matches:
+        unique_matches[_match_identity(match)] = match
+
+    return list(unique_matches.values())
+
+
+def _needs_history(completed_matches: Sequence[OfficialMatch]) -> bool:
+    match_counts = {team_name: 0 for team_name in ALL_TEAM_NAMES}
+
+    for match in completed_matches:
+        match_counts[match.home_team] += 1
+        match_counts[match.away_team] += 1
+
+    return any(match_count < 5 for match_count in match_counts.values())
+
+
+def _build_venue_record(
+    matches: Sequence[OfficialMatch],
+    team_name: str,
+    venue: str,
+) -> VenueRecord:
+    wins = draws = losses = goals_for = goals_against = 0
+
+    for match in matches:
+        if venue == "home" and match.home_team == team_name:
+            scored = int(match.home_goals or 0)
+            conceded = int(match.away_goals or 0)
+        elif venue == "away" and match.away_team == team_name:
+            scored = int(match.away_goals or 0)
+            conceded = int(match.home_goals or 0)
+        else:
+            continue
+
+        goals_for += scored
+        goals_against += conceded
+
+        if scored > conceded:
+            wins += 1
+        elif scored == conceded:
+            draws += 1
+        else:
+            losses += 1
+
+    return VenueRecord(
+        played=wins + draws + losses,
+        wins=wins,
+        draws=draws,
+        losses=losses,
+        goals_for=goals_for,
+        goals_against=goals_against,
+    )
+
+
+def _format_recent_match(
+    match: OfficialMatch,
+    team_name: str,
+) -> str:
+    is_home = match.home_team == team_name
+    opponent = match.away_team if is_home else match.home_team
+    scored = match.home_goals if is_home else match.away_goals
+    conceded = match.away_goals if is_home else match.home_goals
+    venue = "H" if is_home else "A"
+
+    return (
+        f"{match.match_time.strftime('%Y-%m-%d')} {venue} vs {opponent} "
+        f"{int(scored or 0)}-{int(conceded or 0)}"
+    )
+
+
+def _calculate_team_stats(
+    completed_matches: Sequence[OfficialMatch],
+    rankings: dict[str, int],
+) -> dict[str, TeamRecentStats]:
+    team_stats = {}
+
+    for team_name in ALL_TEAM_NAMES:
+        team_matches = [
+            match
+            for match in completed_matches
+            if team_name in (match.home_team, match.away_team)
+        ]
+
+        recent_matches = sorted(
+            team_matches,
+            key=lambda match: match.match_time,
+            reverse=True,
+        )[:5]
+
+        if not recent_matches:
+            continue
+
+        scored_values = []
+        conceded_values = []
+
+        for match in recent_matches:
+            if match.home_team == team_name:
+                scored_values.append(int(match.home_goals or 0))
+                conceded_values.append(int(match.away_goals or 0))
+            else:
+                scored_values.append(int(match.away_goals or 0))
+                conceded_values.append(int(match.home_goals or 0))
+
+        team_stats[team_name] = TeamRecentStats(
+            average_scored=round(sum(scored_values) / len(scored_values), 2),
+            average_conceded=round(
+                sum(conceded_values) / len(conceded_values),
+                2,
+            ),
+            recent_matches=tuple(
+                _format_recent_match(match, team_name)
+                for match in recent_matches
+            ),
+            rank=rankings.get(team_name),
+            home_record=_build_venue_record(
+                completed_matches,
+                team_name,
+                "home",
+            ),
+            away_record=_build_venue_record(
+                completed_matches,
+                team_name,
+                "away",
+            ),
+        )
+
+    return team_stats
+
+
+def _record_values(prefix: str, record: VenueRecord) -> dict[str, int]:
+    return {
+        f"{prefix}_played": record.played,
+        f"{prefix}_wins": record.wins,
+        f"{prefix}_draws": record.draws,
+        f"{prefix}_losses": record.losses,
+        f"{prefix}_goals_for": record.goals_for,
+        f"{prefix}_goals_against": record.goals_against,
+    }
+
+
+def _join_recent_matches(stats: Optional[TeamRecentStats]) -> str:
     if not stats:
         return ""
 
     return " / ".join(stats.recent_matches)
 
 
+def _create_upcoming_matches(
+    current_matches: Sequence[OfficialMatch],
+    team_stats: dict[str, TeamRecentStats],
+    reference_time: datetime,
+) -> pd.DataFrame:
+    upcoming_matches = sorted(
+        (
+            match
+            for match in current_matches
+            if not match.is_completed and match.match_time >= reference_time
+        ),
+        key=lambda match: match.match_time,
+    )
+
+    rows = []
+
+    for match_number, match in enumerate(upcoming_matches, start=1):
+        home_stats = team_stats.get(match.home_team)
+        away_stats = team_stats.get(match.away_team)
+
+        home_record = home_stats.home_record if home_stats else VenueRecord()
+        away_record = away_stats.away_record if away_stats else VenueRecord()
+
+        rows.append(
+            {
+                "match_number": match_number,
+                "match_date": match.match_time.strftime("%Y-%m-%d"),
+                "home_team": match.home_team,
+                "away_team": match.away_team,
+                "home_scored": (
+                    home_stats.average_scored
+                    if home_stats
+                    else DEFAULT_MATCH_VALUES["home_scored"]
+                ),
+                "home_conceded": (
+                    home_stats.average_conceded
+                    if home_stats
+                    else DEFAULT_MATCH_VALUES["home_conceded"]
+                ),
+                "away_scored": (
+                    away_stats.average_scored
+                    if away_stats
+                    else DEFAULT_MATCH_VALUES["away_scored"]
+                ),
+                "away_conceded": (
+                    away_stats.average_conceded
+                    if away_stats
+                    else DEFAULT_MATCH_VALUES["away_conceded"]
+                ),
+                "home_recent_matches": _join_recent_matches(home_stats),
+                "away_recent_matches": _join_recent_matches(away_stats),
+                "home_rank": home_stats.rank if home_stats else None,
+                "away_rank": away_stats.rank if away_stats else None,
+                **_record_values("home", home_record),
+                **_record_values("away", away_record),
+            }
+        )
+
+    return pd.DataFrame(rows, columns=MATCH_COLUMNS)
+
+
 # --------------------------------------------------
-# 読み込み結果とフォールバック
+# 読み込み結果・CSV正規化・フォールバック
 # --------------------------------------------------
+
 
 @dataclass(frozen=True)
 class MatchDataLoadResult:
-    """読み込み結果、画面メッセージ、クラブ別平均値をまとめる。"""
+    """読み込み結果とクラブ別統計をまとめる。"""
 
     matches: pd.DataFrame
     source_name: str
@@ -628,13 +884,13 @@ class MatchDataLoadResult:
 
 
 def get_default_data_sources() -> tuple[MatchDataSource, ...]:
-    """優先順にAPI、CSVを返す。最後はload_matchesが手入力へ切り替える。"""
+    """公式→CSVの優先順を返す。最後はload_matchesが手入力へ切り替える。"""
 
-    return (ApiDataSource(), CsvMatchDataSource())
+    return (JLeagueOfficialDataSource(), CsvMatchDataSource())
 
 
 def get_default_data_source() -> MatchDataSource:
-    """Version 2との互換用。現在の第一取得元を返す。"""
+    """Version 2との互換用。第一取得元を返す。"""
 
     return get_default_data_sources()[0]
 
@@ -645,13 +901,29 @@ def create_empty_matches() -> pd.DataFrame:
     return pd.DataFrame(columns=MATCH_COLUMNS)
 
 
+def _normalize_rank(value: Any) -> Optional[int]:
+    rank = pd.to_numeric(value, errors="coerce")
+
+    if pd.isna(rank) or not 1 <= float(rank) <= 60:
+        return None
+
+    return int(rank)
+
+
+def _normalize_nonnegative_integer(value: Any) -> int:
+    number = pd.to_numeric(value, errors="coerce")
+
+    if pd.isna(number) or float(number) < 0:
+        return 0
+
+    return int(number)
+
+
 def normalize_matches(raw_matches: pd.DataFrame) -> pd.DataFrame:
-    """CSVやAPIのデータを、app.pyが使う共通形式へそろえる。"""
+    """CSV・公式データをapp.pyが使う共通形式へそろえる。"""
 
     if not isinstance(raw_matches, pd.DataFrame):
-        raise MatchDataFormatError(
-            "試合データはDataFrameで返してください。"
-        )
+        raise MatchDataFormatError("試合データはDataFrameで返してください。")
 
     if raw_matches.empty:
         return create_empty_matches()
@@ -665,13 +937,10 @@ def normalize_matches(raw_matches: pd.DataFrame) -> pd.DataFrame:
 
     matches = raw_matches.copy()
 
-    # match_number がなければ、上から第1試合、第2試合として扱う。
     if "match_number" not in matches.columns:
         matches.insert(0, "match_number", range(1, len(matches) + 1))
 
     match_numbers = pd.to_numeric(matches["match_number"], errors="coerce")
-
-    # totoは13試合なので、1～13の整数だけを画面へ渡す。
     valid_numbers = (
         match_numbers.notna()
         & (match_numbers % 1 == 0)
@@ -692,7 +961,6 @@ def normalize_matches(raw_matches: pd.DataFrame) -> pd.DataFrame:
             matches[text_column].fillna(default_value).astype(str).str.strip()
         )
 
-    # 平均値の列がない・空欄・範囲外の場合はVersion 1の初期値へ戻す。
     for value_column, default_value in DEFAULT_MATCH_VALUES.items():
         if value_column in ("home_team", "away_team"):
             continue
@@ -700,15 +968,24 @@ def normalize_matches(raw_matches: pd.DataFrame) -> pd.DataFrame:
         if value_column not in matches.columns:
             matches[value_column] = default_value
 
-        numeric_values = pd.to_numeric(
-            matches[value_column],
-            errors="coerce",
-        )
+        numeric_values = pd.to_numeric(matches[value_column], errors="coerce")
         valid_values = numeric_values.between(0.0, 5.0)
         matches[value_column] = (
             numeric_values.where(valid_values, default_value)
             .fillna(default_value)
             .astype(float)
+        )
+
+    for rank_column in RANK_COLUMNS:
+        if rank_column not in matches.columns:
+            matches[rank_column] = None
+        matches[rank_column] = matches[rank_column].map(_normalize_rank)
+
+    for record_column in RECORD_COLUMNS:
+        if record_column not in matches.columns:
+            matches[record_column] = 0
+        matches[record_column] = matches[record_column].map(
+            _normalize_nonnegative_integer
         )
 
     return (
@@ -719,8 +996,21 @@ def normalize_matches(raw_matches: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def _row_venue_record(row: pd.Series, prefix: str) -> VenueRecord:
+    return VenueRecord(
+        played=_normalize_nonnegative_integer(row.get(f"{prefix}_played")),
+        wins=_normalize_nonnegative_integer(row.get(f"{prefix}_wins")),
+        draws=_normalize_nonnegative_integer(row.get(f"{prefix}_draws")),
+        losses=_normalize_nonnegative_integer(row.get(f"{prefix}_losses")),
+        goals_for=_normalize_nonnegative_integer(row.get(f"{prefix}_goals_for")),
+        goals_against=_normalize_nonnegative_integer(
+            row.get(f"{prefix}_goals_against")
+        ),
+    )
+
+
 def extract_team_stats(raw_matches: pd.DataFrame) -> dict[str, TeamRecentStats]:
-    """全行からクラブ別平均を作る。APIの13試合以降も選択時に利用できる。"""
+    """全行から選択連動用のクラブ別統計を作る。"""
 
     if not isinstance(raw_matches, pd.DataFrame) or raw_matches.empty:
         return {}
@@ -732,7 +1022,7 @@ def extract_team_stats(raw_matches: pd.DataFrame) -> dict[str, TeamRecentStats]:
         "away": ("away_team", "away_scored", "away_conceded", "away_recent_matches"),
     }
 
-    for columns in side_columns.values():
+    for side, columns in side_columns.items():
         team_column, scored_column, conceded_column, recent_column = columns
 
         if not {team_column, scored_column, conceded_column}.issubset(
@@ -755,20 +1045,32 @@ def extract_team_stats(raw_matches: pd.DataFrame) -> dict[str, TeamRecentStats]:
                 continue
 
             recent_value = row.get(recent_column, "")
-            recent_text = (
-                ""
-                if pd.isna(recent_value)
-                else str(recent_value).strip()
-            )
+            recent_text = "" if pd.isna(recent_value) else str(recent_value).strip()
             recent_matches = tuple(
                 item.strip()
                 for item in recent_text.split(" / ")
                 if item.strip()
             )
+
+            existing = team_stats.get(team_name)
+            rank = _normalize_rank(row.get(f"{side}_rank"))
+            home_record = existing.home_record if existing else VenueRecord()
+            away_record = existing.away_record if existing else VenueRecord()
+
+            if side == "home":
+                home_record = _row_venue_record(row, "home")
+            else:
+                away_record = _row_venue_record(row, "away")
+
             team_stats[team_name] = TeamRecentStats(
                 average_scored=float(scored),
                 average_conceded=float(conceded),
-                recent_matches=recent_matches,
+                recent_matches=recent_matches or (
+                    existing.recent_matches if existing else ()
+                ),
+                rank=rank if rank is not None else (existing.rank if existing else None),
+                home_record=home_record,
+                away_record=away_record,
             )
 
     return team_stats
@@ -786,14 +1088,23 @@ def _load_single_source(source: MatchDataSource) -> MatchDataLoadResult:
             matches=create_empty_matches(),
             source_name=source.name,
             status="missing",
-            message=f"{source.name}に利用できるデータがありません。",
+            message="利用できるデータがありません。",
         )
     except MatchDataSourceError:
         return MatchDataLoadResult(
             matches=create_empty_matches(),
             source_name=source.name,
             status="error",
-            message=f"{source.name}を現在利用できません。",
+            message="データを取得できませんでした。",
+        )
+    except Exception:
+        # 取得元の予期しない仕様変更もStreamlitのエラー画面へ出さない。
+        # 次のCSV取得元、または手入力へ安全に切り替える。
+        return MatchDataLoadResult(
+            matches=create_empty_matches(),
+            source_name=source.name,
+            status="error",
+            message="データを取得できませんでした。",
         )
 
     if matches.empty:
@@ -801,7 +1112,7 @@ def _load_single_source(source: MatchDataSource) -> MatchDataLoadResult:
             matches=matches,
             source_name=source.name,
             status="empty",
-            message=f"{source.name}に利用できる試合がありません。",
+            message="利用できる試合がありません。",
             team_stats=team_stats,
         )
 
@@ -817,53 +1128,34 @@ def _load_single_source(source: MatchDataSource) -> MatchDataLoadResult:
 def load_matches(
     data_source: Optional[MatchDataSource] = None,
 ) -> MatchDataLoadResult:
-    """API→CSV→手入力の順で、画面に例外を出さず読み込む。
-
-    ``data_source`` を渡した場合はVersion 2と同じく、その取得元だけを
-    テスト・利用できる。省略時だけ自動フォールバックを行う。
-    """
+    """公式→CSV→手入力の順で、画面に例外を出さず読み込む。"""
 
     if data_source is not None:
         return _load_single_source(data_source)
-
-    unavailable_sources = []
 
     for source in get_default_data_sources():
         result = _load_single_source(source)
 
         if result.is_loaded:
-            if unavailable_sources:
-                skipped = "、".join(unavailable_sources)
-                return MatchDataLoadResult(
-                    matches=result.matches,
-                    source_name=result.source_name,
-                    status=result.status,
-                    message=(
-                        f"{skipped}を利用できなかったため、"
-                        f"{result.source_name}から{len(result.matches)}試合を"
-                        "読み込みました。"
-                    ),
-                    team_stats=result.team_stats,
-                )
+            # 前の取得元の技術エラーは画面へ出さない。
             return result
-
-        unavailable_sources.append(source.name)
 
     return MatchDataLoadResult(
         matches=create_empty_matches(),
         source_name="手入力",
         status="manual",
-        message="APIとCSVを利用できないため、手入力モードで起動しました。",
+        message="手入力モードで起動しました。",
     )
 
 
 def get_match_defaults(matches: pd.DataFrame, match_number: int) -> dict:
-    """指定試合の初期値を返す。データがなければVersion 1と同じ値。"""
+    """指定試合の初期値を返す。なければVersion 1と同じ値。"""
 
     defaults = {
         "match_number": match_number,
         **DEFAULT_MATCH_METADATA,
         **DEFAULT_MATCH_VALUES,
+        **DEFAULT_MATCH_DETAILS,
     }
 
     if matches.empty:
@@ -876,7 +1168,11 @@ def get_match_defaults(matches: pd.DataFrame, match_number: int) -> dict:
 
     match_values = selected_match.iloc[0]
 
-    for column in (*DEFAULT_MATCH_METADATA, *DEFAULT_MATCH_VALUES):
+    for column in (
+        *DEFAULT_MATCH_METADATA,
+        *DEFAULT_MATCH_VALUES,
+        *DEFAULT_MATCH_DETAILS,
+    ):
         defaults[column] = match_values[column]
 
     return defaults

@@ -1,9 +1,19 @@
-import math
-
 import pandas as pd
 import streamlit as st
 
-from data_loader import TeamRecentStats, get_match_defaults, load_matches
+from data_loader import (
+    TeamRecentStats,
+    VenueRecord,
+    get_match_defaults,
+    load_matches,
+)
+from prediction import (
+    calculate_expected_goals,
+    calculate_match_probabilities,
+    create_reason,
+    get_confidence_label,
+    get_toto_prediction,
+)
 from teams import TEAM_OPTIONS, format_team_option
 
 
@@ -19,208 +29,8 @@ st.set_page_config(
 
 
 # --------------------------------------------------
-# 計算用関数
+# 画面補助関数
 # --------------------------------------------------
-
-def poisson_probability(goals: int, expected_goals: float) -> float:
-    """
-    ポアソン分布を使って、指定得点になる確率を計算する。
-    """
-    return (
-        math.exp(-expected_goals)
-        * expected_goals**goals
-        / math.factorial(goals)
-    )
-
-
-def calculate_expected_goals(
-    home_scored: float,
-    home_conceded: float,
-    away_scored: float,
-    away_conceded: float,
-) -> tuple[float, float]:
-    """
-    両チームの直近成績から期待得点を計算する。
-
-    Version 1では、ホーム側に8％のホーム補正を加える。
-    """
-
-    home_expected = (
-        (home_scored + away_conceded) / 2
-    ) * 1.08
-
-    away_expected = (
-        away_scored + home_conceded
-    ) / 2
-
-    # 極端な数値を防ぐ
-    home_expected = max(0.15, min(home_expected, 4.0))
-    away_expected = max(0.15, min(away_expected, 4.0))
-
-    return home_expected, away_expected
-
-
-def calculate_match_probabilities(
-    home_expected: float,
-    away_expected: float,
-) -> dict:
-    """
-    0～6得点までのスコア確率を計算し、
-    ホーム勝ち・引き分け・アウェイ勝ちを集計する。
-    """
-
-    home_win = 0.0
-    draw = 0.0
-    away_win = 0.0
-
-    score_probabilities = []
-
-    for home_goals in range(7):
-        home_probability = poisson_probability(
-            home_goals,
-            home_expected,
-        )
-
-        for away_goals in range(7):
-            away_probability = poisson_probability(
-                away_goals,
-                away_expected,
-            )
-
-            probability = (
-                home_probability * away_probability
-            )
-
-            score_probabilities.append(
-                {
-                    "home_goals": home_goals,
-                    "away_goals": away_goals,
-                    "probability": probability,
-                }
-            )
-
-            if home_goals > away_goals:
-                home_win += probability
-            elif home_goals == away_goals:
-                draw += probability
-            else:
-                away_win += probability
-
-    total = home_win + draw + away_win
-
-    if total <= 0:
-        raise ValueError(
-            "勝敗確率を計算できませんでした。"
-        )
-
-    # 合計を100％に調整
-    home_win /= total
-    draw /= total
-    away_win /= total
-
-    most_likely_score = max(
-        score_probabilities,
-        key=lambda item: item["probability"],
-    )
-
-    return {
-        "home_win": home_win,
-        "draw": draw,
-        "away_win": away_win,
-        "home_goals": most_likely_score["home_goals"],
-        "away_goals": most_likely_score["away_goals"],
-    }
-
-
-def get_toto_prediction(
-    home_win: float,
-    draw: float,
-    away_win: float,
-) -> tuple[str, float]:
-    """
-    最も確率が高い結果をtoto表記で返す。
-    """
-
-    probabilities = {
-        "1": home_win,
-        "0": draw,
-        "2": away_win,
-    }
-
-    prediction = max(
-        probabilities,
-        key=probabilities.get,
-    )
-
-    return prediction, probabilities[prediction]
-
-
-def get_confidence_label(
-    probabilities: list[float],
-) -> str:
-    """
-    1位と2位の確率差から予想の信頼度を判定する。
-    """
-
-    sorted_probabilities = sorted(
-        probabilities,
-        reverse=True,
-    )
-
-    difference = (
-        sorted_probabilities[0]
-        - sorted_probabilities[1]
-    )
-
-    top_probability = sorted_probabilities[0]
-
-    if top_probability >= 0.60 and difference >= 0.20:
-        return "鉄板候補"
-
-    if top_probability >= 0.48 and difference >= 0.10:
-        return "本命"
-
-    if difference <= 0.05:
-        return "大接戦"
-
-    return "接戦"
-
-
-def create_reason(
-    home_expected: float,
-    away_expected: float,
-    home_win: float,
-    draw: float,
-    away_win: float,
-) -> str:
-    """
-    計算結果について簡単な説明を作る。
-    """
-
-    if draw >= home_win and draw >= away_win:
-        return (
-            "両チームの期待得点が近く、"
-            "引き分け確率が最も高くなっています。"
-        )
-
-    difference = home_expected - away_expected
-
-    if difference >= 0.70:
-        return (
-            "ホーム側の期待得点がアウェイ側を"
-            "大きく上回っています。"
-        )
-
-    if difference <= -0.70:
-        return (
-            "アウェイ側の期待得点がホーム側を"
-            "大きく上回っています。"
-        )
-
-    return (
-        "両チームの期待得点差が小さく、"
-        "結果が分かれやすい試合です。"
-    )
 
 
 def get_team_option_index(team_name: str):
@@ -238,17 +48,17 @@ def get_team_option_index(team_name: str):
 
 @st.cache_data(ttl=6 * 60 * 60, show_spinner=False)
 def load_match_data():
-    """API使用量を抑えるため、取得結果を6時間キャッシュする。"""
+    """公式サイトへのアクセスを抑えるため6時間キャッシュする。"""
 
     return load_matches()
 
 
-def apply_team_averages(
+def apply_team_stats(
     match_number: int,
     side: str,
     team_stats: dict[str, TeamRecentStats],
 ) -> None:
-    """チーム変更時だけ、直近成績の平均値を数値入力へ反映する。"""
+    """チーム変更時に平均値・順位・会場別成績を反映する。"""
 
     selected_team = st.session_state.get(
         f"{side}_team_{match_number}"
@@ -272,6 +82,21 @@ def apply_team_averages(
         stats.average_conceded
     )
 
+    st.session_state[f"{side}_rank_{match_number}"] = stats.rank
+
+    record = stats.home_record if side == "home" else stats.away_record
+
+    for field_name in (
+        "wins",
+        "draws",
+        "losses",
+        "goals_for",
+        "goals_against",
+    ):
+        st.session_state[f"{side}_{field_name}_{match_number}"] = int(
+            getattr(record, field_name)
+        )
+
 
 def get_recent_matches(
     team_name: str,
@@ -281,6 +106,144 @@ def get_recent_matches(
 
     stats = team_stats.get(team_name)
     return stats.recent_matches if stats else ()
+
+
+def get_team_detail_defaults(
+    match_number: int,
+    side: str,
+    team_name: str,
+    match_defaults: dict,
+    team_stats: dict[str, TeamRecentStats],
+) -> dict:
+    """表示・編集に使う順位と会場別成績を返す。"""
+
+    stats = team_stats.get(team_name)
+
+    if stats:
+        record = stats.home_record if side == "home" else stats.away_record
+        defaults = {
+            "rank": stats.rank,
+            "wins": record.wins,
+            "draws": record.draws,
+            "losses": record.losses,
+            "goals_for": record.goals_for,
+            "goals_against": record.goals_against,
+        }
+    else:
+        defaults = {
+            "rank": match_defaults[f"{side}_rank"],
+            "wins": match_defaults[f"{side}_wins"],
+            "draws": match_defaults[f"{side}_draws"],
+            "losses": match_defaults[f"{side}_losses"],
+            "goals_for": match_defaults[f"{side}_goals_for"],
+            "goals_against": match_defaults[f"{side}_goals_against"],
+        }
+
+    # 一度ユーザーが修正した値は、同じチームの間は維持する。
+    for field_name in defaults:
+        session_key = f"{side}_{field_name}_{match_number}"
+        if session_key in st.session_state:
+            defaults[field_name] = st.session_state[session_key]
+
+    return defaults
+
+
+def detail_values_to_record(detail_values: dict) -> VenueRecord:
+    """画面用の辞書を構造化された会場別成績へ変換する。"""
+
+    wins = int(detail_values["wins"])
+    draws = int(detail_values["draws"])
+    losses = int(detail_values["losses"])
+
+    return VenueRecord(
+        played=wins + draws + losses,
+        wins=wins,
+        draws=draws,
+        losses=losses,
+        goals_for=int(detail_values["goals_for"]),
+        goals_against=int(detail_values["goals_against"]),
+    )
+
+
+def format_detail_summary(
+    rank,
+    record: VenueRecord,
+    venue_label: str,
+) -> str:
+    """順位と会場別成績を1行で表示する。"""
+
+    rank_label = f"{int(rank)}位" if rank is not None else "順位未確定"
+    return f"{rank_label}｜{venue_label}：{record.label}"
+
+
+def create_detail_inputs(
+    match_number: int,
+    side: str,
+    defaults: dict,
+) -> dict:
+    """選択中の1試合だけ、順位と会場別成績を編集可能にする。"""
+
+    rank_key = f"{side}_rank_{match_number}"
+    rank_options = {
+        "label": "順位",
+        "min_value": 1,
+        "max_value": 60,
+        "step": 1,
+        "key": rank_key,
+        "placeholder": "未確定",
+    }
+
+    if rank_key not in st.session_state:
+        rank_options["value"] = (
+            int(defaults["rank"])
+            if defaults["rank"] is not None
+            else None
+        )
+
+    rank = st.number_input(**rank_options)
+
+    values = {"rank": rank}
+    labels = {
+        "wins": "勝",
+        "draws": "分",
+        "losses": "敗",
+        "goals_for": "得点",
+        "goals_against": "失点",
+    }
+
+    result_columns = st.columns(3)
+
+    for field_index, field_name in enumerate(("wins", "draws", "losses")):
+        with result_columns[field_index]:
+            input_key = f"{side}_{field_name}_{match_number}"
+            input_options = {
+                "label": labels[field_name],
+                "min_value": 0,
+                "max_value": 99,
+                "step": 1,
+                "key": input_key,
+            }
+            if input_key not in st.session_state:
+                input_options["value"] = int(defaults[field_name])
+            values[field_name] = st.number_input(**input_options)
+
+    score_columns = st.columns(2)
+
+    for field_index, field_name in enumerate(("goals_for", "goals_against")):
+        with score_columns[field_index]:
+            input_key = f"{side}_{field_name}_{match_number}"
+            input_options = {
+                "label": labels[field_name],
+                "min_value": 0,
+                "max_value": 999,
+                "step": 1,
+                "key": input_key,
+            }
+            if input_key not in st.session_state:
+                input_options["value"] = int(defaults[field_name])
+            values[field_name] = st.number_input(**input_options)
+
+    return values
 
 
 def create_average_input(
@@ -312,7 +275,7 @@ def create_average_input(
 st.title("⚽ Jリーグ toto予想")
 
 st.caption(
-    "直近5試合の平均得点・平均失点から、"
+    "Jリーグ公式データの直近5試合から、"
     "13試合の勝敗確率を計算します。"
 )
 
@@ -322,7 +285,7 @@ st.warning(
 )
 
 # app.pyは取得元を直接扱わず、data_loader.pyから共通形式で受け取る。
-# APIとCSVが利用できなくても空データが返り、手入力で利用できる。
+# 公式データとCSVが利用できなくても空データが返り、手入力で利用できる。
 match_data_result = load_match_data()
 
 if match_data_result.is_loaded:
@@ -335,12 +298,30 @@ with st.expander("入力方法を見る"):
     st.write(
         """
         チームを選ぶと、取得できた直近5試合から
-        平均得点と平均失点を自動入力します。
+        平均得点・平均失点・順位・ホーム／アウェイ成績を自動入力します。
         自動入力後の数字は自由に修正できます。
 
-        APIを利用できない場合はCSV、CSVもない場合は
+        Jリーグ公式データを取得できない場合はCSV、CSVもない場合は
         手入力へ自動で切り替わります。
         """
+    )
+
+edit_detail_stats = st.toggle(
+    "順位・ホーム／アウェイ成績を修正する",
+    value=False,
+    help=(
+        "予測計算は現在、平均得点・平均失点だけを使用します。"
+        "順位と会場別成績は将来の分析機能用です。"
+    ),
+)
+
+editable_match_number = None
+
+if edit_detail_stats:
+    editable_match_number = st.selectbox(
+        "詳細データを修正する試合",
+        options=range(1, 14),
+        format_func=lambda number: f"第{number}試合",
     )
 
 
@@ -371,7 +352,7 @@ for match_number in range(1, 14):
         format_func=format_team_option,
         placeholder="カテゴリーからチームを選択",
         key=f"home_team_{match_number}",
-        on_change=apply_team_averages,
+        on_change=apply_team_stats,
         args=(
             match_number,
             "home",
@@ -388,7 +369,7 @@ for match_number in range(1, 14):
         format_func=format_team_option,
         placeholder="カテゴリーからチームを選択",
         key=f"away_team_{match_number}",
-        on_change=apply_team_averages,
+        on_change=apply_team_stats,
         args=(
             match_number,
             "away",
@@ -440,6 +421,64 @@ for match_number in range(1, 14):
             default_value=match_defaults["away_conceded"],
         )
 
+    home_detail_values = get_team_detail_defaults(
+        match_number=match_number,
+        side="home",
+        team_name=home_team,
+        match_defaults=match_defaults,
+        team_stats=match_data_result.team_stats,
+    )
+    away_detail_values = get_team_detail_defaults(
+        match_number=match_number,
+        side="away",
+        team_name=away_team,
+        match_defaults=match_defaults,
+        team_stats=match_data_result.team_stats,
+    )
+
+    if editable_match_number == match_number:
+        with st.expander("順位・会場別成績を修正", expanded=True):
+            detail_col1, detail_col2 = st.columns(2)
+
+            with detail_col1:
+                st.markdown("**ホームチーム**")
+                home_detail_values = create_detail_inputs(
+                    match_number,
+                    "home",
+                    home_detail_values,
+                )
+
+            with detail_col2:
+                st.markdown("**アウェイチーム**")
+                away_detail_values = create_detail_inputs(
+                    match_number,
+                    "away",
+                    away_detail_values,
+                )
+
+    home_record = detail_values_to_record(home_detail_values)
+    away_record = detail_values_to_record(away_detail_values)
+
+    detail_summary_col1, detail_summary_col2 = st.columns(2)
+
+    with detail_summary_col1:
+        st.caption(
+            format_detail_summary(
+                home_detail_values["rank"],
+                home_record,
+                "ホーム成績",
+            )
+        )
+
+    with detail_summary_col2:
+        st.caption(
+            format_detail_summary(
+                away_detail_values["rank"],
+                away_record,
+                "アウェイ成績",
+            )
+        )
+
     home_recent_matches = get_recent_matches(
         home_team,
         match_data_result.team_stats,
@@ -469,6 +508,10 @@ for match_number in range(1, 14):
             "home_conceded": home_conceded,
             "away_scored": away_scored,
             "away_conceded": away_conceded,
+            "home_rank": home_detail_values["rank"],
+            "away_rank": away_detail_values["rank"],
+            "home_record": home_record,
+            "away_record": away_record,
         }
     )
 
