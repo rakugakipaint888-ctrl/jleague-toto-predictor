@@ -45,7 +45,7 @@ match_number,match_date,home_team,away_team,home_scored,home_conceded,away_score
 
 ## 実行時キャッシュと履歴
 
-Version6～Version7-Aは`data/cache/`、`data/history/`、`data/config/`を
+Version6～Version7-Bは`data/cache/`、`data/history/`、`data/config/`を
 自動作成し、次を保存します。
 
 - `official_match_results.json`：現行・前シーズン相当の試合結果、順位表、
@@ -61,6 +61,13 @@ Version6～Version7-Aは`data/cache/`、`data/history/`、`data/config/`を
 - `../config/version7a_draw_settings.json`：画面でYESを選んだ場合だけ更新する
   Version7-A採用済み引分設定
 - `../config/version7a_backups/`：採用直前の設定を復元するJSONバックアップ
+- `../history/version7b_partial_trials.csv`：Version7-BのTrial完了ごとの途中結果
+- `../history/version7b_model_ranking.csv`：探索内Validation順の上位20モデル
+- `../history/version7b_optimization_history.csv`：探索方式、期間、seed、重み、
+  Training／Validation指標、最適係数、判定、採用有無
+- `../config/version7b_model_settings.json`：画面でYESを選んだ場合だけ更新する
+  Version7-B採用済み全体モデル設定
+- `../config/version7b_backups/`：Version7-B採用直前の設定バックアップ
 
 `data/reference/jleague_history_2024_2025.csv`は、公式取得と動的保存CSVの両方が
 利用できない初回起動でも直近1シーズン以上を検証できる読み取り用データです。
@@ -130,3 +137,16 @@ Version6までの列を残し、Version6とVersion7-Aを同じ行で再比較で
 数値0、文字列`"0"`、CSV読込後の`0.0`を同じ引分ラベルとして保存・評価します。
 Version7-Aの最適化履歴は既存の予想履歴や開催回CSVへ混在させません。列構成が
 不正な最適化履歴CSVは上書きせず、画面で保存失敗を通知します。
+
+## Version7-Bの保存データ
+
+Version7-BのTrial、ランキング、実行履歴も既存CSVとは分離します。Trial設定や
+探索結果を`model_config.py`へ書き戻しません。通常予想へ反映されるのは、モデル
+最適化画面で比較結果を確認して`YES`を押した候補だけです。採用前JSONは必ず別名で
+バックアップし、直前設定へ復元できます。引分係数を探索対象にしなかった採用では、
+Version7-Aの引分設定をそのまま参照します。
+
+途中Trialは逐次保存されるためプロセス中断後も確認できますが、保存済みTrialから
+残りだけを自動再開する機能はありません。CSV列が破損している場合は上書きせず、
+画面へエラーを表示します。ROIは公式13試合・結果・必要な配当を確認できる場合だけ
+保存し、不足データから推測しません。

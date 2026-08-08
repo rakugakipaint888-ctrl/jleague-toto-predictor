@@ -1,8 +1,8 @@
-"""Version4～Version7-Aの予想履歴を開催回キーでCSV保存する。"""
+"""Version4～Version7-Bの予想履歴を開催回キーでCSV保存する。"""
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from io import StringIO
 from pathlib import Path
@@ -256,7 +256,7 @@ def records_from_prediction_results(
     toto_round: TotoRound,
     prediction_date: Optional[datetime] = None,
 ) -> list[PredictionHistoryRecord]:
-    """画面の13行結果をVersion4～Version7-Aの履歴行へ変換する。"""
+    """画面の13行結果をVersion4～Version7-Bの履歴行へ変換する。"""
 
     if not isinstance(result_df, pd.DataFrame) or result_df.empty:
         return []
@@ -305,6 +305,18 @@ def records_from_prediction_results(
             "away_expected": "away_expected_after_version6",
         },
     }
+    if (
+        "prediction_version" in result_df.columns
+        and (result_df["prediction_version"] == "Version7-B").any()
+    ):
+        version_fields["Version7-B"] = {
+            "prediction": "version7b_prediction",
+            "probability_1": "version7b_home_win",
+            "probability_0": "version7b_draw",
+            "probability_2": "version7b_away_win",
+            "home_expected": "home_expected_after_version7b",
+            "away_expected": "away_expected_after_version7b",
+        }
 
     order_column = (
         "toto_match_number"

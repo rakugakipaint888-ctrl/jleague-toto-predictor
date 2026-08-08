@@ -7,10 +7,12 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from model_config import (
+    DEFAULT_ELO_SETTINGS,
     DEFAULT_FORM_SETTINGS,
     DEFAULT_MODEL_SETTINGS,
     DEFAULT_STANDINGS_SETTINGS,
     DEFAULT_VENUE_SETTINGS,
+    EloSettings,
     FormSettings,
     ModelSettings,
     StandingsSettings,
@@ -169,12 +171,16 @@ def _calculate_pair(
     home_conceded: float,
     away_scored: float,
     away_conceded: float,
+    settings: ModelSettings = DEFAULT_MODEL_SETTINGS,
 ) -> ExpectedGoalsPair:
     home_expected, away_expected = calculate_expected_goals(
         home_scored=home_scored,
         home_conceded=home_conceded,
         away_scored=away_scored,
         away_conceded=away_conceded,
+        home_correction=settings.home_correction,
+        expected_goals_minimum=settings.expected_goals_minimum,
+        expected_goals_maximum=settings.expected_goals_maximum,
     )
     return ExpectedGoalsPair(home_expected, away_expected)
 
@@ -184,6 +190,7 @@ def _apply_elo(
     home_elo: Optional[float],
     away_elo: Optional[float],
     requested: bool,
+    settings: EloSettings = DEFAULT_ELO_SETTINGS,
 ) -> tuple[ExpectedGoalsPair, float, bool]:
     normalized_home_elo = _finite_optional(home_elo)
     normalized_away_elo = _finite_optional(away_elo)
@@ -202,6 +209,7 @@ def _apply_elo(
         home_elo=normalized_home_elo,
         away_elo=normalized_away_elo,
         enabled=enabled,
+        settings=settings,
     )
     return (
         ExpectedGoalsPair(adjustment.home_after, adjustment.away_after),
@@ -253,6 +261,7 @@ def predict_match(
     venue_settings: VenueSettings = DEFAULT_VENUE_SETTINGS,
     standings_settings: StandingsSettings = DEFAULT_STANDINGS_SETTINGS,
     model_settings: ModelSettings = DEFAULT_MODEL_SETTINGS,
+    elo_settings: EloSettings = DEFAULT_ELO_SETTINGS,
 ) -> ModelPipelineResult:
     """指定順序で補正し、異常値時はVersion4期待得点へ戻す。"""
 
@@ -279,12 +288,14 @@ def predict_match(
         home_regular_conceded,
         away_regular_scored,
         away_regular_conceded,
+        model_settings,
     )
     version4_after_elo, version4_elo_rate, version4_elo_enabled = _apply_elo(
         version4_before_elo,
         home.elo,
         away.elo,
         options.use_elo,
+        elo_settings,
     )
     version4 = _prediction_snapshot(
         version4_before_elo,
@@ -321,6 +332,7 @@ def predict_match(
             home_form.conceded,
             away_form.scored,
             away_form.conceded,
+            model_settings,
         )
 
         # 3. 会場別成績との混合 + 4. 基本期待得点。
@@ -339,6 +351,7 @@ def predict_match(
             venue.home.conceded,
             venue.away.scored,
             venue.away.conceded,
+            model_settings,
         )
 
         # 5. Elo補正。
@@ -347,9 +360,10 @@ def predict_match(
             home.elo,
             away.elo,
             options.use_elo,
+            elo_settings,
         )
 
-        # 6. 勝点・得失点差補正。順位は表示用の補助指標に留める。
+        # 6. 順位・勝点・得失点差補正。
         standings = adjust_expected_goals_by_standings(
             expected_after_elo.home,
             expected_after_elo.away,

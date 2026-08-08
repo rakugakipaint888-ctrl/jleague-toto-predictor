@@ -125,6 +125,25 @@ class PredictionHistoryTest(unittest.TestCase):
         ):
             self.assertIn(required, loaded.columns)
 
+    def test_adopted_version7b_adds_a_separate_history_version(self) -> None:
+        frame = result_frame().assign(
+            prediction_version="Version7-B",
+            version7b_prediction="2",
+            version7b_home_win=20.0,
+            version7b_draw=25.0,
+            version7b_away_win=55.0,
+            home_expected_after_version7b=0.9,
+            away_expected_after_version7b=1.6,
+        )
+        records = records_from_prediction_results(frame, round_with_results())
+        self.assertEqual(len(records), 65)
+        version7b = [
+            record for record in records if record.prediction_version == "Version7-B"
+        ]
+        self.assertEqual(len(version7b), 13)
+        self.assertTrue(all(record.prediction == "2" for record in version7b))
+        self.assertTrue(all(record.probability_2 == 0.55 for record in version7b))
+
     def test_reconcile_adds_actual_results_to_saved_prediction(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             manager = PredictionHistoryManager(

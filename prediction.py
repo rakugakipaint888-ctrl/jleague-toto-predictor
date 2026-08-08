@@ -22,16 +22,27 @@ def calculate_expected_goals(
     home_conceded: float,
     away_scored: float,
     away_conceded: float,
+    home_correction: float = 1.08,
+    expected_goals_minimum: float = 0.15,
+    expected_goals_maximum: float = 4.0,
 ) -> tuple[float, float]:
     """両チームの直近成績から期待得点を計算する。"""
 
-    # Version 1から使っている8％のホーム補正を維持する。
-    home_expected = ((home_scored + away_conceded) / 2) * 1.08
+    # 既定値1.08はVersion1～Version7-Aを完全再現する。Version7-Bだけが
+    # 明示的に別設定を渡し、見せかけではなく実際の期待得点へ反映する。
+    correction = float(home_correction)
+    minimum = max(0.0, float(expected_goals_minimum))
+    maximum = float(expected_goals_maximum)
+    if not math.isfinite(correction) or correction <= 0:
+        raise ValueError("ホーム補正は正の有限値にしてください。")
+    if not math.isfinite(minimum) or not math.isfinite(maximum) or maximum <= minimum:
+        raise ValueError("期待得点の上下限が不正です。")
+    home_expected = ((home_scored + away_conceded) / 2) * correction
     away_expected = (away_scored + home_conceded) / 2
 
     # 極端な数値を防ぐ。
-    home_expected = max(0.15, min(home_expected, 4.0))
-    away_expected = max(0.15, min(away_expected, 4.0))
+    home_expected = max(minimum, min(home_expected, maximum))
+    away_expected = max(minimum, min(away_expected, maximum))
 
     return home_expected, away_expected
 

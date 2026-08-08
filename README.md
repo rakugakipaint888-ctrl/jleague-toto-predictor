@@ -23,7 +23,7 @@ J1・J2・J3の試合を対象に、直近成績、会場別成績、順位表�
 - Elo差による期待得点補正とON/OFF切替
 - カテゴリー内順位付きElo一覧とElo順の並べ替え
 - 本命、信頼度、予想スコア、予想理由の表示
-- 開催回をキーにしたVersion4～Version7-Aの予想・実結果履歴CSV
+- 開催回をキーにしたVersion4～Version7-Bの予想・実結果履歴CSV
 - 開催日時点より前のデータだけを使うバックテスト
 - 的中率、1・0・2別正答率、Brier Score、Log Loss、Calibration、ROI
 - 開催回別・累積・Version別の表とグラフを備えた分析タブ
@@ -32,8 +32,152 @@ J1・J2・J3の試合を対象に、直近成績、会場別成績、順位表�
 - Version7-Aの引分候補、引分専用評価、確率帯別Calibration
 - 時系列Training／Validation分離とOptuna小規模探索
 - Version6とVersion7-Aの同一Validation比較、明示的な設定採用・復元
+- Version7-Bの全体パラメータ最適化（Optuna／Random／Grid／2段階探索）
+- 固定分割、シーズン／開催回ウォークフォワード、上位20モデルランキング
+- 引分性能保護、過学習判定、モデル安定性、ブートストラップ95%信頼区間
 - 公式データ → CSV → 手入力の自動切替
 - 補正別の欠損フォールバックとVersion4予測への最終フォールバック
+
+## Version7-B
+
+Version7-Bの目的は、Version7-Aで追加した引分予測を維持しながら、既存の
+統計モデル全体が未知データで安定する係数を探すことです。バックテスト的中率だけを
+最大化するのではなく、1・0・2の確率品質、引分性能、Training／Validation差、
+シーズン・リーグ間のばらつきをまとめて評価します。機械学習モデル、ニューラル
+ネットワーク、LLM予測、販売、ログイン、決済、マルチユーザー機能は追加しません。
+
+Version7-Aが引分関連10係数だけを小規模探索するのに対し、Version7-Bはホーム補正、
+Elo補正率・ホームアドバンテージ・K係数、直近5試合重み、直近／シーズン平均の
+混合率、ホーム／アウェイ成績混合率、順位・勝点・得失点差補正率、期待得点の
+上下限を対象にします。これらは画面用の見せかけの値ではなく、Elo再計算、
+期待得点、各補正処理へTrialごとに実際に渡されます。初期値はVersion7-Aまでの
+予測を再現します。
+
+「引分パラメータを探索対象に含める」をOFFにすると、Version7-Aの現在採用設定を
+固定したまま全体係数だけを探索します。ONにすると`base_draw_logit_bias`、
+`poisson_draw_weight`、近さ・引分率・ロースコア等の重み、`candidate_threshold`、
+`candidate_margin`も同じ候補へ含めます。OFFの候補を採用してもVersion7-Aの
+引分設定ファイルは上書きしません。
+
+### 探索方式、Trial数、モデル上限
+
+「モデル最適化」タブで次の4方式を選択できます。初期値はOptuna、Trial数は100、
+乱数seedは`20260808`です。
+
+- **Optuna（ベイズ最適化）**：TPE samplerで有望な範囲を順次探索
+- **ランダムサーチ**：同一seedなら同一候補列を可能な限り再現
+- **グリッドサーチ**：実行前に全組み合わせを数え、上限超過時は実行を拒否。
+  明示的に制限実行を選んだ場合だけ、Trial数とモデル上限内へ切り詰める
+- **2段階探索**：前半約70%をOptunaで広く探索し、上位3候補のホーム補正、
+  Elo補正率、会場別混合率の周辺を狭いGridで再探索
+
+Trial数は10、30、50、100、300、500、1,000、3,000、5,000、10,000または
+任意値を選べます。モデル上限は簡易1,000、標準10,000、詳細50,000または
+任意値です。標準Gridは4,096組、引分係数を含むGridは4,194,304組になるため、
+無制限実行しません。画面には予定組み合わせ数、設定上限、拒否または制限理由を
+表示します。
+
+Trial数を増やしても性能向上は保証されません。候補数、開催回数、ブートストラップ
+回数にほぼ比例して処理時間が増え、1,000 Trial以上や10,000回Bootstrapは
+長時間になる可能性があります。まず10～100 Trialでデータ分離と評価結果を確認し、
+必要な場合だけ増やしてください。
+
+### Training／Validation、ウォークフォワード、未来データ禁止
+
+初期検証方式は「シーズン単位ウォークフォワード」です。固定Training／Validation
+分割、シーズン単位ウォークフォワード、開催回単位ウォークフォワードから選べます。
+探索順位はTraining内の時系列FoldのValidationで決め、最終Validationは順位確定後に
+上位20モデルだけへ1回使用します。同じ試合をパラメータ選択と最終評価の両方には
+使いません。Training Scoreだけで順位を決めることもありません。
+
+各開催回のcutoffは最初の試合日の`00:00 JST`です。直近成績、会場別成績、
+シーズン集計、順位相当値、勝点、得失点差、Elo、引分特徴量は、必ずcutoffより前に
+完了した試合から再構成します。対象試合結果、後日の試合、現在順位、最終順位・
+最終勝点などのシーズン終了値は過去予測へ持ち込みません。
+
+バックテスト期間は直近3／5／10シーズンまたは任意期間、対象リーグはJ1／J2／J3／
+全リーグです。初期値は直近5シーズン・全リーグです。保存・取得できたデータだけを
+使い、存在しない年は生成しません。画面には要求期間とは別に実際の使用期間、
+Training期間、Validation期間、試合数、データ不足リーグを表示します。3シーズン未満
+ではシーズンウォークフォワードへ勝手に代替せず、成立条件と利用可能シーズンを
+エラー表示します。全リーグ選択時もJ1・J2・J3別のScoreを安定性表で確認できます。
+
+### 総合Scoreと評価指標
+
+初期重みはBrier Score 30%、Log Loss 20%、Calibration 15%、全体的中率15%、
+引分性能10%、Validation安定性10%です。画面で変更でき、合計100%でない場合は
+警告して実行を停止します。内部では各指標を0～1の品質へ正規化してから0～100の
+総合Scoreへ変換します。小さいほど良いBrier、Log Loss、Calibrationと、大きいほど
+良い的中率・引分性能を同じ向きへ揃えるため、異なる単位の生値は加算しません。
+
+引分性能はVersion7-Aの引分Precision、Recall、F1、Brier、Calibrationを全て使用
+します。各モデルについて、総合Score、Brier、Log Loss、Calibration、全体的中率、
+試合数、1／0／2の予測数・予測率・クラス別的中率・平均予測確率・実発生率を表示
+します。ROIは13試合の公式順・実結果・必要な公式配当が揃う場合だけ計算し、不足時は
+推測せず「算出不可」とします。
+
+### 引分性能保護、過学習、安定性
+
+候補は同じValidation上のVersion7-Aと比較します。引分F1、Recallの低下、引分Brier、
+Calibrationの増加が許容幅を超えると「引分性能悪化」とし、探索Scoreへ段階的な
+ペナルティを付けます。許容幅は`model_config.py`の
+`VERSION7B_DRAW_DEGRADATION_TOLERANCES`で変更できます。固定値だけで候補を隠さず、
+悪化理由と実数値をランキング・比較表へ残します。
+
+TrainingとValidationは、総合Score、Brier、Log Loss、Calibration、全体的中率、
+引分F1、引分Brier、引分Calibrationを別表示します。設定閾値を超える差は
+「過学習の可能性」と表示します。閾値は`VERSION7B_OVERFIT_THRESHOLDS`で管理します。
+最終候補ではシーズン別Score、リーグ別Score、Training／Validation差、Bootstrap
+信頼区間、Trial間のパラメータ重要度を確認できます。特定シーズンまたはリーグの
+Score範囲が大きい場合は警告します。
+
+### ランキング、Bootstrap、比較グラフ
+
+探索後は探索内Validation順の上位20モデルを表示・専用CSVへ保存します。各行に
+Validation／Training Score、全体指標、引分5指標、1／0／2予測率、過学習判定、
+引分性能悪化判定、全パラメータを残します。最終Validationの値で探索順位を
+後から並べ替えないため、最終評価をパラメータ選択へ漏らしません。
+
+再評価はなし、1,000回、10,000回または任意回数を選べ、上位10モデルを試合単位の
+Bootstrapで復元抽出します。Brier、Log Loss、Calibration、全体的中率、引分F1の
+平均、中央値、標準偏差、95%信頼区間を算出します。同じデータ・設定・seedなら
+可能な限り再現します。決定論的な同じバックテストを単純に何千回も繰り返す処理
+ではありません。
+
+グラフはTrialごとの総合／Validation Score、Brier、Log Loss、Calibration、
+全体的中率、引分F1、Training対Validation、パラメータ重要度を表示します。加えて
+シーズン別・リーグ別ScoreとBootstrap表を表示します。現在のVersion7-Aと候補は
+同じ最終Validationで13指標を「Version7-A／Version7-B候補／差／改善・悪化」として
+比較し、悪化した項目も隠しません。
+
+### 保存、採用、バックアップ
+
+Trialは完了直後に`data/history/version7b_partial_trials.csv`へ逐次保存します。
+上位20モデルは`version7b_model_ranking.csv`、実行単位の設定・期間・seed・指標・
+最良係数・判定・採用有無は`version7b_optimization_history.csv`へ保存し、既存の
+予想履歴やVersion7-A履歴とは混在させません。破損した列構成を検出した場合は
+黙って上書きせず、画面へ理由を表示します。過去の最適化履歴は同じタブで確認できます。
+
+最適化完了だけでは本番設定を変更しません。「Version7-B最適設定を採用しますか？」
+で`YES`を押した場合だけ`data/config/version7b_model_settings.json`を原子的に更新し、
+その前に`data/config/version7b_backups/`へ直前設定を保存します。`NO`は無変更です。
+採用前に現在／候補設定、変更箇所、Training／Validation、Version7-Aとの差、
+過学習・引分悪化を確認でき、「直前設定へ戻す」で検証済みバックアップを復元します。
+採用済みVersion7-BのP(1)・P(0)・P(2)は既存の正規化済み予測結果として公開され、
+将来のVersion7-Cから安全に再利用できます。
+
+### 既知の制限とVersion7-Cとの境界
+
+Streamlitの同期実行では、ページ再読込をまたぐ確実な停止・完全自動再開を保証できません。
+不安定なバックグラウンド処理は追加せず、各Trialの逐次保存と過去履歴確認を優先します。
+途中CSVから残りTrialだけを自動継続する機能は未実装です。Bootstrap信頼区間と過去
+Validation改善は将来成績を保証しません。パラメータ重要度は探索Trialとの単変量相関に
+基づく診断値で、因果効果ではありません。利用可能な確定済み開催回が少ないリーグ・
+シーズンでは警告を確認してください。
+
+Version7-Cで予定する、toto買い目最適化、シングル／ダブル／トリプル配置、予算別
+買い目生成、投票率を使う期待値、買い目カバー率はVersion7-Bには実装しません。
+Version7-Bは予測モデルそのものの係数最適化までを責務とします。
 
 ## Version7-A
 
@@ -164,17 +308,17 @@ Trial数、Training／Validation期間・試合数、Best Trial、Best Score、�
 採用前設定は`data/config/version7a_backups/`へ保存し、「直前設定へ戻す」で復元
 できます。最適化完了、CSV保存、画面表示だけでは通常予想の設定は変わりません。
 
-### 既知の制限とVersion7-B
+### 既知の制限とVersion7-Bへの引継ぎ
 
 Version7-Aは少数開催回・最大100 Trial程度を前提とするため、Validationの標本差や
 過学習の影響を受けます。Validationの改善は将来試合での改善を保証しません。
 負傷者、出場停止、予想先発など既存データにない情報は使いません。
 
-Version7-Bでは、既存モデル全体の本格最適化、Random／Grid Search、2段階探索、
-1,000～50,000モデル探索、高度なWalk Forward、Bootstrap、95%信頼区間、
-感度・安定性分析、大規模ランキング、買い目最適化を段階的に検討します。
-これらはVersion7-Aには実装していません。AI自動改善提案、負傷者・出場停止、
-note連携も対象外です。
+Version7-Bでは、Version7-Aの引分設定を固定または探索対象として選び、既存モデル
+全体のRandom／Grid／2段階探索、最大50,000モデルの上限管理、ウォークフォワード、
+Bootstrap、95%信頼区間、安定性分析、上位20ランキングを追加しました。
+買い目最適化はVersion7-Cの範囲です。AI自動改善提案、負傷者・出場停止、note連携も
+引き続き対象外です。
 
 ## Version6
 
@@ -511,7 +655,7 @@ Eloデータを取得できないため、Elo補正なしで計算しました�
 ## モジュール構成
 
 - `teams.py`：J1・J2・J3のクラブ情報、名称正規化、プルダウン用データ
-- `model_config.py`：Elo、Version5、Version7-A、キャッシュの設定値
+- `model_config.py`：Elo、Version5、Version7-A／7-B、キャッシュの設定値
 - `config.py`：Version4までのimport互換用ブリッジ
 - `elo_rating.py`：Elo計算、期待得点補正、Eloキャッシュ
 - `form_adjuster.py`：直近5試合の時系列重み付け
@@ -528,6 +672,13 @@ Eloデータを取得できないため、Elo補正なしで計算しました�
 - `draw_evaluation.py`：引分専用指標、確率帯評価、複合Score
 - `draw_optimizer.py`：時系列分割、Optuna小規模探索、保存・採用・復元
 - `draw_analysis.py`：Version7-A比較表、4グラフ、最適化UI
+- `parameter_manager.py`：Version7-B候補、採用設定、バックアップ・復元
+- `walk_forward_validator.py`：固定／シーズン／開催回の時系列分割
+- `model_evaluation.py`：正規化Score、引分保護、過学習・安定性判定
+- `model_optimizer.py`：4探索方式、時点バックテスト、ランキング・履歴保存
+- `bootstrap_evaluation.py`：上位候補のBootstrapと95%信頼区間
+- `model_compare.py`：Training／Validation、Version7-A比較、グラフ用表
+- `model_optimization_ui.py`：Version7-Bモデル最適化タブ
 - `app.py`：各モジュールを接続する入力・予想画面
 
 `elo_rating.py`は`teams.py`をimportしません。クラブ構成と名称正規化関数は
@@ -594,6 +745,20 @@ Version7-Aでは既存列を残したまま、次の列を追加します。
 - `draw_candidate` / `draw_candidate_reasons`
 - `version7a_prediction_changed`
 
+Version7-B設定を採用した通常予想では、Version4～Version7-A列を従来係数で保持し、
+候補係数の結果を次の別列へ追加します。
+
+- `version7b_prediction`
+- `version7b_home_win` / `version7b_draw` / `version7b_away_win`
+- `version7b_top_probability`
+- `version7b_home_elo` / `version7b_away_elo` / `version7b_elo_difference`
+- `home_expected_after_version7b` / `away_expected_after_version7b`
+- `version7b_poisson_draw_probability` / `version7b_adjusted_draw_probability`
+- `version7b_prediction_changed`
+
+`prediction_version`が`Version7-B`の行だけ、予想履歴にもVersion7-Bを5番目の独立
+Versionとして保存します。既存のVersion7-A行をVersion7-B値で上書きしません。
+
 予想履歴CSVは上記キーに加え、Versionごとの1・0・2確率、期待得点、
 `brier_score`、`log_loss`、`calibration`、`expected_hits`、`stake_yen`、
 `payout_yen`、`roi`を保存します。すべてtoto公式試合番号順です。
@@ -608,7 +773,7 @@ Version7-Aでは既存列を残したまま、次の列を追加します。
 ├── elo_rating.py             # Elo計算・取得・期待得点補正・Eloキャッシュ
 ├── form_adjuster.py           # 直近5試合の時系列重み付け
 ├── venue_adjuster.py          # ホーム／アウェイ別成績の混合
-├── standings_adjuster.py      # 勝点・得失点差補正
+├── standings_adjuster.py      # 順位・勝点・得失点差補正
 ├── model_pipeline.py          # Version5の適用順序とVersion4比較
 ├── model_config.py           # Elo・Version5・キャッシュ設定
 ├── config.py                 # Version4までのimport互換用ブリッジ
@@ -622,6 +787,13 @@ Version7-Aでは既存列を残したまま、次の列を追加します。
 ├── draw_evaluation.py        # 引分専用評価・確率帯・Score
 ├── draw_optimizer.py         # 時系列分割・Optuna・保存・設定採用
 ├── draw_analysis.py          # 引分分析タブ・比較表・グラフ
+├── parameter_manager.py      # Version7-B候補・採用・バックアップ
+├── walk_forward_validator.py # 3方式の時系列Training／Validation分割
+├── model_evaluation.py       # 総合Score・引分保護・過学習・安定性
+├── model_optimizer.py        # Optuna／Random／Grid／2段階探索
+├── bootstrap_evaluation.py   # Bootstrap分布・95%信頼区間
+├── model_compare.py          # ランキング・比較・グラフ用表
+├── model_optimization_ui.py  # Version7-Bモデル最適化タブ
 ├── data/
 │   ├── README.md             # matches.csvと実行時キャッシュの仕様
 │   ├── reference/            # 公式取得失敗時の2024～2025年結果CSV
@@ -639,6 +811,7 @@ Version7-Aでは既存列を残したまま、次の列を追加します。
 │   ├── test_draw_evaluation.py # Precision・Recall・F1・確率帯
 │   ├── test_draw_optimizer.py # 時系列分割・10/30 Trial・採用復元
 │   ├── test_draw_analysis.py # 比較表・グラフ入力
+│   ├── test_version7b.py     # 4探索・時系列安全性・採用・Bootstrap
 │   ├── test_data_loader.py   # 公式取得・履歴キャッシュ・フォールバック
 │   ├── test_elo_rating.py    # Elo式・補正・増分キャッシュ
 │   ├── test_prediction.py    # Version3ポアソン計算の回帰テスト
@@ -674,7 +847,8 @@ python -m unittest discover -s tests -v
 - Version5：直近成績・ホーム／アウェイ成績・順位等補正
 - Version6：toto公式順・開催回・バックテスト・履歴・分析・確率指標・ROI
 - Version7-A：引分予想強化、引分専用評価、時系列分割、Optuna小規模探索
-- Version7-B：既存モデル全体の本格探索、Walk Forward・安定性評価の高度化
+- Version7-B：既存モデル全体の4方式探索、Walk Forward、安定性・信頼区間
+- Version7-C：予算と確率に応じたtoto買い目最適化
 - Version8：AIによる重み自動調整・モデル改善提案
 - Version9：独自判断入力・AIコメント生成
 - Version10：note記事自動生成

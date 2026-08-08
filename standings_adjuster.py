@@ -59,6 +59,7 @@ class StandingsAdjustment:
     away_before: float
     home_after: float
     away_after: float
+    rank_adjustment_rate: float
     points_adjustment_rate: float
     goal_difference_adjustment_rate: float
     total_adjustment_rate: float
@@ -66,6 +67,8 @@ class StandingsAdjustment:
     away_points_per_match: Optional[float]
     home_goal_difference_per_match: Optional[float]
     away_goal_difference_per_match: Optional[float]
+    home_rank: Optional[float]
+    away_rank: Optional[float]
     enabled: bool
     data_available: bool
     applied: bool
@@ -86,8 +89,18 @@ def adjust_expected_goals_by_standings(
     home_gdpm = home.goal_difference_per_match
     away_gdpm = away.goal_difference_per_match
 
+    rank_rate = 0.0
     points_rate = 0.0
     goal_difference_rate = 0.0
+
+    home_rank = _finite(home.rank)
+    away_rank = _finite(away.rank)
+    if enabled and home_rank is not None and away_rank is not None:
+        # 数字が小さい上位側を正にするため away-home の順で差を取る。
+        rank_rate = _clamp(
+            (away_rank - home_rank) * settings.rank_change_per_position,
+            settings.rank_max_adjustment,
+        )
 
     if enabled and home_ppm is not None and away_ppm is not None:
         points_rate = _clamp(
@@ -103,11 +116,13 @@ def adjust_expected_goals_by_standings(
         )
 
     data_available = bool(
+        (home_rank is not None and away_rank is not None)
+        or
         (home_ppm is not None and away_ppm is not None)
         or (home_gdpm is not None and away_gdpm is not None)
     )
     total_rate = _clamp(
-        points_rate + goal_difference_rate,
+        rank_rate + points_rate + goal_difference_rate,
         settings.total_max_adjustment,
     )
     applied = bool(enabled and data_available)
@@ -117,6 +132,7 @@ def adjust_expected_goals_by_standings(
         away_before=float(away_expected),
         home_after=float(home_expected) * (1.0 + total_rate),
         away_after=float(away_expected) * (1.0 - total_rate),
+        rank_adjustment_rate=rank_rate,
         points_adjustment_rate=points_rate,
         goal_difference_adjustment_rate=goal_difference_rate,
         total_adjustment_rate=total_rate,
@@ -124,6 +140,8 @@ def adjust_expected_goals_by_standings(
         away_points_per_match=away_ppm,
         home_goal_difference_per_match=home_gdpm,
         away_goal_difference_per_match=away_gdpm,
+        home_rank=home_rank,
+        away_rank=away_rank,
         enabled=bool(enabled),
         data_available=data_available,
         applied=applied,

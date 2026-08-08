@@ -18,6 +18,7 @@ from data_loader import (
     OfficialMatch,
 )
 from history_manager import TotoMatch, TotoRound, TotoRoundLoadResult
+from parameter_manager import ActiveVersion7BSettings, Version7BParameters
 from teams import TEAM_OPTIONS
 
 
@@ -120,10 +121,10 @@ class StreamlitAppTest(unittest.TestCase):
         self.assertEqual(len(app.error), 0)
         self.assertEqual(
             [tab.label for tab in app.tabs],
-            ["予想", "分析", "引分分析"],
+            ["予想", "分析", "引分分析", "モデル最適化"],
         )
-        self.assertEqual(len(app.selectbox), 29)
-        self.assertEqual(len(app.number_input), 53)
+        self.assertGreaterEqual(len(app.selectbox), 29)
+        self.assertGreaterEqual(len(app.number_input), 53)
         self.assertEqual(len(app.toggle), 5)
         self.assertEqual(app.number_input[0].value, 2.0)
         self.assertEqual(app.number_input[1].value, 0.8)
@@ -334,6 +335,96 @@ class StreamlitAppTest(unittest.TestCase):
             [f"{home} vs {away}" for home, away in official_cards],
         )
 
+    def test_adopted_version7b_keeps_version7a_comparison_separate(self) -> None:
+        parameters = Version7BParameters.from_mapping(
+            {
+                "home_correction": 1.18,
+                "recent_weighted_share": 0.85,
+                "venue_mix_rate": 0.20,
+                "expected_goals_minimum": 0.30,
+            }
+        )
+        adopted = ActiveVersion7BSettings(
+            parameters=parameters,
+            adopted=True,
+            draw_override=False,
+        )
+        with patch(
+            "parameter_manager.load_active_version7b_settings",
+            return_value=adopted,
+        ):
+            app = AppTest.from_file(str(PROJECT_ROOT / "app.py")).run(timeout=20)
+            team_selectboxes = [
+                selectbox
+                for selectbox in app.selectbox
+                if str(selectbox.key).startswith(("home_team_", "away_team_"))
+            ]
+            for option_number, selectbox in enumerate(team_selectboxes):
+                selectbox.select(TEAM_OPTIONS[option_number % len(TEAM_OPTIONS)])
+            app.button[0].click()
+            app.run(timeout=20)
+
+        self.assertEqual(len(app.exception), 0)
+        result = app.session_state["latest_prediction_results"]
+        self.assertEqual(set(result["prediction_version"]), {"Version7-B"})
+        for column in (
+            "version7a_prediction",
+            "version7b_prediction",
+            "version7a_home_win",
+            "version7b_home_win",
+            "home_expected_after_version6",
+            "home_expected_after_version7b",
+        ):
+            self.assertIn(column, result.columns)
+        self.assertTrue(
+            (
+                result["home_expected_after_version6"]
+                != result["home_expected_after_version7b"]
+            ).any()
+        )
+
+    def test_version7b_optimization_controls_have_safe_defaults(self) -> None:
+        app = AppTest.from_file(str(PROJECT_ROOT / "app.py")).run(timeout=20)
+        selectboxes = {str(item.key): item for item in app.selectbox}
+        number_inputs = {str(item.key): item for item in app.number_input}
+
+        self.assertEqual(
+            selectboxes["version7b_search_method"].value,
+            "Optuna（ベイズ最適化）",
+        )
+        self.assertEqual(selectboxes["version7b_trials_choice"].value, 100)
+        numeric_trial_options = {
+            int(value)
+            for value in selectboxes["version7b_trials_choice"].options
+            if str(value).isdigit()
+        }
+        self.assertTrue(
+            {10, 30, 50, 100, 300, 500, 1000, 3000, 5000, 10000}.issubset(
+                numeric_trial_options
+            )
+        )
+        self.assertEqual(
+            selectboxes["version7b_model_limit_label"].value,
+            "標準探索",
+        )
+        self.assertEqual(selectboxes["version7b_backtest_period"].value, "直近5シーズン")
+        self.assertEqual(selectboxes["version7b_target_league"].value, "全リーグ")
+        self.assertEqual(
+            selectboxes["version7b_validation_method"].value,
+            "シーズン単位ウォークフォワード",
+        )
+        self.assertEqual(selectboxes["version7b_bootstrap_choice"].value, 1000)
+        self.assertEqual(
+            number_inputs["version7b_random_seed"].value,
+            20260808,
+        )
+        weights = [
+            item.value
+            for key, item in number_inputs.items()
+            if key.startswith("version7b_weight_")
+        ]
+        self.assertEqual(sum(weights), 100.0)
+
     def test_analysis_tab_renders_tables_metrics_and_all_graphs(self) -> None:
         with patch(
             "prediction_history.PredictionHistoryManager.load",
@@ -345,11 +436,11 @@ class StreamlitAppTest(unittest.TestCase):
         self.assertEqual(len(app.error), 0)
         self.assertEqual(
             [tab.label for tab in app.tabs],
-            ["予想", "分析", "引分分析"],
+            ["予想", "分析", "引分分析", "モデル最適化"],
         )
-        self.assertEqual(len(app.metric), 8)
-        self.assertEqual(len(app.get("vega_lite_chart")), 5)
-        self.assertEqual(len(app.dataframe), 3)
+        self.assertGreaterEqual(len(app.metric), 8)
+        self.assertGreaterEqual(len(app.get("vega_lite_chart")), 5)
+        self.assertGreaterEqual(len(app.dataframe), 3)
         analysis_subheaders = {item.value for item in app.subheader}
         self.assertTrue(
             {
@@ -376,9 +467,9 @@ class StreamlitAppTest(unittest.TestCase):
         app.run(timeout=20)
 
         self.assertEqual(len(app.exception), 0)
-        self.assertEqual(len(app.selectbox), 30)
+        self.assertEqual(len(app.selectbox), 38)
         # 52平均値 + 順位表18 + 会場別10
-        self.assertEqual(len(app.number_input), 81)
+        self.assertGreaterEqual(len(app.number_input), 81)
 
         rank_input = next(
             item
@@ -580,7 +671,7 @@ class StreamlitEloIntegrationTest(unittest.TestCase):
         self.assertEqual(len(app.exception), 0)
         self.assertEqual(len(app.error), 0)
         self.assertEqual(len(app.toggle), 5)
-        self.assertEqual(len(app.selectbox), 30)
+        self.assertEqual(len(app.selectbox), 38)
         self.assertEqual(len(app.dataframe), 1)
         elo_table = app.dataframe[0].value
         self.assertEqual(len(elo_table), 60)

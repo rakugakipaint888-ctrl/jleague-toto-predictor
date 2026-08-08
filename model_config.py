@@ -36,6 +36,7 @@ ELO_EXPECTED_GOALS_MAX_ADJUSTMENT = 0.15
 ELO_ADJUSTMENT_STRENGTH = 1.0
 
 # Version5: 直近成績、会場別成績、順位表補正、期待得点の安全制御。
+HOME_CORRECTION = 1.08
 RECENT_MATCH_WEIGHTS = (5.0, 4.0, 3.0, 2.0, 1.0)
 RECENT_WEIGHTED_SHARE = 0.60
 SEASON_AVERAGE_SHARE = 0.40
@@ -49,6 +50,8 @@ POINTS_PER_MATCH_MAX_ADJUSTMENT = 0.05
 GOAL_DIFFERENCE_PER_MATCH_CHANGE_PER_UNIT = 0.03
 GOAL_DIFFERENCE_PER_MATCH_MAX_ADJUSTMENT = 0.03
 STANDINGS_TOTAL_MAX_ADJUSTMENT = 0.08
+RANK_CHANGE_PER_POSITION = 0.0
+RANK_MAX_ADJUSTMENT = 0.04
 
 EXPECTED_GOALS_MINIMUM = 0.15
 EXPECTED_GOALS_MAXIMUM = 4.00
@@ -142,6 +145,9 @@ class StandingsSettings:
         GOAL_DIFFERENCE_PER_MATCH_MAX_ADJUSTMENT
     )
     total_max_adjustment: float = STANDINGS_TOTAL_MAX_ADJUSTMENT
+    # 既存の位置引数互換性を維持するためVersion7-B追加値は末尾に置く。
+    rank_change_per_position: float = RANK_CHANGE_PER_POSITION
+    rank_max_adjustment: float = RANK_MAX_ADJUSTMENT
 
 
 @dataclass(frozen=True)
@@ -150,6 +156,8 @@ class ModelSettings:
 
     expected_goals_minimum: float = EXPECTED_GOALS_MINIMUM
     expected_goals_maximum: float = EXPECTED_GOALS_MAXIMUM
+    # 既存の位置引数互換性を維持するためVersion7-B追加値は末尾に置く。
+    home_correction: float = HOME_CORRECTION
 
 
 DEFAULT_FORM_SETTINGS = FormSettings()
@@ -208,3 +216,125 @@ VERSION7A_OVERALL_BRIER_ALLOWANCE = 0.01
 VERSION7A_LOG_LOSS_ALLOWANCE = 0.02
 VERSION7A_CALIBRATION_ALLOWANCE = 0.015
 VERSION7A_ACCURACY_ALLOWANCE = 0.01
+
+
+# Version7-B: 既存統計モデル全体の探索・検証・採用設定。
+# 実行時の採用値はJSONへ分離し、Trialや履歴をこのファイルへ書き込まない。
+VERSION7B_MODEL_VERSION = "Version7-B"
+VERSION7B_DEFAULT_MODEL_PARAMETERS = {
+    "home_correction": HOME_CORRECTION,
+    "elo_correction_rate": ELO_EXPECTED_GOALS_CHANGE_PER_100,
+    "home_advantage": HOME_ADVANTAGE,
+    "k_factor": K_FACTOR,
+    "recent_match_weights": RECENT_MATCH_WEIGHTS,
+    "recent_weighted_share": RECENT_WEIGHTED_SHARE,
+    "season_average_share": SEASON_AVERAGE_SHARE,
+    "venue_mix_rate": VENUE_SHARE_5_PLUS,
+    "rank_correction_rate": RANK_CHANGE_PER_POSITION,
+    "points_correction_rate": POINTS_PER_MATCH_CHANGE_PER_UNIT,
+    "goal_difference_correction_rate": (
+        GOAL_DIFFERENCE_PER_MATCH_CHANGE_PER_UNIT
+    ),
+    "expected_goals_minimum": EXPECTED_GOALS_MINIMUM,
+    "expected_goals_maximum": EXPECTED_GOALS_MAXIMUM,
+}
+
+# Optuna／Random Search用の実探索範囲。直近5試合は各重みを探索後、
+# 最新試合ほど重くなるよう降順へ正規化してからモデルへ渡す。
+VERSION7B_MODEL_SEARCH_SPACE = {
+    "home_correction": {"low": 1.00, "high": 1.18, "step": 0.01},
+    "elo_correction_rate": {"low": 0.01, "high": 0.10, "step": 0.01},
+    "home_advantage": {"low": 0.0, "high": 120.0, "step": 5.0},
+    "k_factor": {"low": 10.0, "high": 40.0, "step": 2.0},
+    "recent_match_weight_1": {"low": 0.5, "high": 6.0, "step": 0.5},
+    "recent_match_weight_2": {"low": 0.5, "high": 6.0, "step": 0.5},
+    "recent_match_weight_3": {"low": 0.5, "high": 6.0, "step": 0.5},
+    "recent_match_weight_4": {"low": 0.5, "high": 6.0, "step": 0.5},
+    "recent_match_weight_5": {"low": 0.5, "high": 6.0, "step": 0.5},
+    "recent_weighted_share": {"low": 0.30, "high": 0.85, "step": 0.05},
+    "venue_mix_rate": {"low": 0.20, "high": 0.90, "step": 0.05},
+    "rank_correction_rate": {"low": 0.0, "high": 0.012, "step": 0.001},
+    "points_correction_rate": {"low": 0.0, "high": 0.10, "step": 0.01},
+    "goal_difference_correction_rate": {
+        "low": 0.0,
+        "high": 0.08,
+        "step": 0.01,
+    },
+    "expected_goals_minimum": {"low": 0.05, "high": 0.40, "step": 0.05},
+    "expected_goals_maximum": {"low": 2.50, "high": 5.00, "step": 0.25},
+}
+
+# Grid Searchは全組み合わせ数を事前計算できる有限候補だけを使う。
+# 引分を含めない標準Gridは2^12=4,096モデル。引分を含めると上限警告対象になる。
+VERSION7B_MODEL_GRID_SPACE = {
+    "home_correction": (1.04, 1.12),
+    "elo_correction_rate": (0.03, 0.07),
+    "home_advantage": (40.0, 80.0),
+    "k_factor": (15.0, 30.0),
+    "recent_weight_profile": ("linear", "steep"),
+    "recent_weighted_share": (0.40, 0.70),
+    "venue_mix_rate": (0.50, 0.80),
+    "rank_correction_rate": (0.0, 0.006),
+    "points_correction_rate": (0.03, 0.08),
+    "goal_difference_correction_rate": (0.01, 0.06),
+    "expected_goals_minimum": (0.10, 0.25),
+    "expected_goals_maximum": (3.50, 4.50),
+}
+VERSION7B_DRAW_GRID_SPACE = {
+    "base_draw_logit_bias": (-0.10, 0.20),
+    "poisson_draw_weight": (0.90, 1.10),
+    "elo_closeness_weight": (0.0, 0.40),
+    "expected_goal_closeness_weight": (0.0, 0.50),
+    "team_draw_rate_weight": (0.0, 0.50),
+    "recent_draw_rate_weight": (0.0, 0.30),
+    "low_score_weight": (0.0, 0.40),
+    "standing_closeness_weight": (0.0, 0.30),
+    "candidate_threshold": (0.25, 0.30),
+    "candidate_margin": (0.04, 0.08),
+}
+
+VERSION7B_TRIAL_COUNT_DEFAULT = 100
+VERSION7B_TRIAL_COUNT_CHOICES = (
+    10,
+    30,
+    50,
+    100,
+    300,
+    500,
+    1000,
+    3000,
+    5000,
+    10000,
+)
+VERSION7B_MODEL_LIMITS = {
+    "簡易探索": 1000,
+    "標準探索": 10000,
+    "詳細探索": 50000,
+}
+VERSION7B_RANDOM_SEED = 20260808
+VERSION7B_RANKING_LIMIT = 20
+VERSION7B_DEFAULT_EVALUATION_WEIGHTS = {
+    "brier_score": 0.30,
+    "log_loss": 0.20,
+    "calibration": 0.15,
+    "accuracy": 0.15,
+    "draw_performance": 0.10,
+    "validation_stability": 0.10,
+}
+VERSION7B_DRAW_DEGRADATION_TOLERANCES = {
+    "draw_f1_drop": 0.10,
+    "draw_recall_drop": 0.10,
+    "draw_brier_increase": 0.02,
+    "draw_calibration_increase": 0.03,
+}
+VERSION7B_OVERFIT_THRESHOLDS = {
+    "score_gap": 10.0,
+    "brier_increase": 0.10,
+    "log_loss_increase": 0.15,
+    "calibration_increase": 0.08,
+    "accuracy_drop": 0.10,
+    "draw_f1_drop": 0.15,
+    "draw_brier_increase": 0.08,
+    "draw_calibration_increase": 0.08,
+}
+VERSION7B_BOOTSTRAP_CHOICES = (0, 1000, 10000)
