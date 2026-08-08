@@ -13,3 +13,6 @@ data/cache/
 
 # Version6の開催回別予想履歴
 data/history/
+
+# Version7-Aの採用設定・復元用バックアップ
+data/config/

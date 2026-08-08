@@ -118,8 +118,11 @@ class StreamlitAppTest(unittest.TestCase):
 
         self.assertEqual(len(app.exception), 0)
         self.assertEqual(len(app.error), 0)
-        self.assertEqual([tab.label for tab in app.tabs], ["予想", "分析"])
-        self.assertEqual(len(app.selectbox), 26)
+        self.assertEqual(
+            [tab.label for tab in app.tabs],
+            ["予想", "分析", "引分分析"],
+        )
+        self.assertEqual(len(app.selectbox), 29)
         self.assertEqual(len(app.number_input), 53)
         self.assertEqual(len(app.toggle), 5)
         self.assertEqual(app.number_input[0].value, 2.0)
@@ -239,9 +242,21 @@ class StreamlitAppTest(unittest.TestCase):
             "standings_adjustment_enabled",
             "version4_prediction",
             "version5_prediction",
+            "version6_prediction",
+            "version7a_prediction",
+            "version7a_home_win",
+            "version7a_draw",
+            "version7a_away_win",
+            "draw_candidate",
+            "draw_candidate_reasons",
             "prediction_changed",
         }
         self.assertTrue(expected_csv_columns.issubset(result_df.columns))
+        self.assertTrue(
+            ((result_df[["1", "0", "2"]].sum(axis=1) - 100.0).abs() < 1e-9).all()
+        )
+        self.assertFalse(result_df[["1", "0", "2"]].isna().any().any())
+        self.assertTrue((result_df[["1", "0", "2"]] >= 0.0).all().all())
         self.assertEqual(len(result_df), 13)
         self.assertTrue(
             (
@@ -310,7 +325,10 @@ class StreamlitAppTest(unittest.TestCase):
         result_df = app.session_state["latest_prediction_results"]
         self.assertEqual(result_df["toto_match_number"].tolist(), list(range(1, 14)))
         self.assertEqual(result_df["toto_round"].tolist(), [1644] * 13)
-        self.assertEqual(result_df["prediction_version"].tolist(), ["Version6"] * 13)
+        self.assertEqual(
+            result_df["prediction_version"].tolist(),
+            ["Version7-A"] * 13,
+        )
         self.assertEqual(
             result_df["対戦カード"].tolist(),
             [f"{home} vs {away}" for home, away in official_cards],
@@ -325,8 +343,11 @@ class StreamlitAppTest(unittest.TestCase):
 
         self.assertEqual(len(app.exception), 0)
         self.assertEqual(len(app.error), 0)
-        self.assertEqual([tab.label for tab in app.tabs], ["予想", "分析"])
-        self.assertEqual(len(app.metric), 4)
+        self.assertEqual(
+            [tab.label for tab in app.tabs],
+            ["予想", "分析", "引分分析"],
+        )
+        self.assertEqual(len(app.metric), 8)
         self.assertEqual(len(app.get("vega_lite_chart")), 5)
         self.assertEqual(len(app.dataframe), 3)
         analysis_subheaders = {item.value for item in app.subheader}
@@ -355,7 +376,7 @@ class StreamlitAppTest(unittest.TestCase):
         app.run(timeout=20)
 
         self.assertEqual(len(app.exception), 0)
-        self.assertEqual(len(app.selectbox), 27)
+        self.assertEqual(len(app.selectbox), 30)
         # 52平均値 + 順位表18 + 会場別10
         self.assertEqual(len(app.number_input), 81)
 
@@ -538,6 +559,7 @@ class StreamlitEloIntegrationTest(unittest.TestCase):
         self.history_patcher.stop()
         self.environment_patcher.stop()
         self.temp_directory.cleanup()
+        TEST_CSV_PATH.unlink(missing_ok=True)
         st.cache_data.clear()
 
     def _select_all_teams(self, app: AppTest) -> None:
@@ -558,7 +580,7 @@ class StreamlitEloIntegrationTest(unittest.TestCase):
         self.assertEqual(len(app.exception), 0)
         self.assertEqual(len(app.error), 0)
         self.assertEqual(len(app.toggle), 5)
-        self.assertEqual(len(app.selectbox), 27)
+        self.assertEqual(len(app.selectbox), 30)
         self.assertEqual(len(app.dataframe), 1)
         elo_table = app.dataframe[0].value
         self.assertEqual(len(elo_table), 60)

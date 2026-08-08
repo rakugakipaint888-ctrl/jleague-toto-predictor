@@ -428,13 +428,12 @@ def _category_for_team(
     team_name: str,
     matches: Sequence[OfficialMatch],
 ) -> str:
-    current_category = get_team_category(team_name)
-    if current_category:
-        return current_category
+    # 過去時点の順位計算では、現在の所属カテゴリーより当時の公式履歴を優先する。
+    # 昇降格後の現在カテゴリーを過去開催回へ持ち込む未来データ混入を防ぐ。
     for match in reversed(matches):
         if team_name in (match.home_team, match.away_team) and match.category:
             return match.category.split("/")[0]
-    return ""
+    return get_team_category(team_name) or ""
 
 
 def _rank_by_category(
@@ -571,6 +570,7 @@ def _team_input(
         rank=stats.rank,
         points=stats.points if stats.standings_available else None,
         played=stats.played if stats.standings_available else None,
+        season_draws=(stats.draws if stats.played > 0 else None),
         goal_difference=(
             stats.goal_difference if stats.standings_available else None
         ),

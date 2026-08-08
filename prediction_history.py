@@ -1,4 +1,4 @@
-"""Version4～Version6の予想履歴を開催回キーでCSV保存する。"""
+"""Version4～Version7-Aの予想履歴を開催回キーでCSV保存する。"""
 
 from __future__ import annotations
 
@@ -100,7 +100,7 @@ def _as_float(value: Any, default: float = 0.0) -> float:
 def _as_toto_label(value: Any) -> str:
     """CSVで1/0/2が数値化されても正規ラベルへ戻す。"""
 
-    if value is None:
+    if value is None or isinstance(value, bool):
         return ""
     text_value = str(value).strip()
     if text_value in TOTO_OUTCOMES:
@@ -114,7 +114,7 @@ def _as_toto_label(value: Any) -> str:
 
 def _actual_results_by_number(toto_round: TotoRound) -> dict[int, str]:
     return {
-        match.match_number: match.actual_result or ""
+        match.match_number: _as_toto_label(match.actual_result)
         for match in toto_round.matches
     }
 
@@ -122,7 +122,7 @@ def _actual_results_by_number(toto_round: TotoRound) -> dict[int, str]:
 def _expected_hits_for_rows(rows: pd.DataFrame) -> float:
     total = 0.0
     for _, row in rows.iterrows():
-        prediction = str(row.get("prediction", ""))
+        prediction = _as_toto_label(row.get("prediction", ""))
         if prediction not in TOTO_OUTCOMES:
             continue
         total += _as_probability(row.get(f"probability_{prediction}"))
@@ -137,8 +137,8 @@ def finalize_prediction_results(result_df: pd.DataFrame) -> pd.DataFrame:
     result = result_df.copy()
     if not {"actual_result", "本命"}.issubset(result.columns):
         return result
-    actuals = result["actual_result"].fillna("").astype(str)
-    predictions = result["本命"].fillna("").astype(str)
+    actuals = result["actual_result"].map(_as_toto_label)
+    predictions = result["本命"].map(_as_toto_label)
     result["hit"] = [
         prediction == actual if actual in TOTO_OUTCOMES else None
         for prediction, actual in zip(predictions, actuals)
@@ -175,13 +175,19 @@ def apply_round_metrics(
         expected_hits = _expected_hits_for_rows(group)
         result.loc[indexes, "expected_hits"] = expected_hits
 
-        actuals = [str(value) for value in group["actual_result"].fillna("")]
+        actuals = [
+            _as_toto_label(value)
+            for value in group["actual_result"]
+        ]
         if len(group) != 13 or not all(
             actual in TOTO_OUTCOMES for actual in actuals
         ):
             continue
 
-        predictions = [str(value) for value in group["prediction"]]
+        predictions = [
+            _as_toto_label(value)
+            for value in group["prediction"]
+        ]
         probabilities = [
             {
                 "1": _as_probability(row.get("probability_1")),
@@ -250,7 +256,7 @@ def records_from_prediction_results(
     toto_round: TotoRound,
     prediction_date: Optional[datetime] = None,
 ) -> list[PredictionHistoryRecord]:
-    """画面の13行結果をVersion4・5・6の39履歴行へ変換する。"""
+    """画面の13行結果をVersion4～Version7-Aの履歴行へ変換する。"""
 
     if not isinstance(result_df, pd.DataFrame) or result_df.empty:
         return []
@@ -275,9 +281,9 @@ def records_from_prediction_results(
         },
         "Version5": {
             "prediction": "version5_prediction",
-            "probability_1": "1",
-            "probability_0": "0",
-            "probability_2": "2",
+            "probability_1": "version6_home_win",
+            "probability_0": "version6_draw",
+            "probability_2": "version6_away_win",
             "home_expected": "home_expected_after_version5",
             "away_expected": "away_expected_after_version5",
         },
@@ -287,6 +293,14 @@ def records_from_prediction_results(
             "probability_1": "version6_home_win",
             "probability_0": "version6_draw",
             "probability_2": "version6_away_win",
+            "home_expected": "home_expected_after_version6",
+            "away_expected": "away_expected_after_version6",
+        },
+        "Version7-A": {
+            "prediction": "version7a_prediction",
+            "probability_1": "version7a_home_win",
+            "probability_0": "version7a_draw",
+            "probability_2": "version7a_away_win",
             "home_expected": "home_expected_after_version6",
             "away_expected": "away_expected_after_version6",
         },

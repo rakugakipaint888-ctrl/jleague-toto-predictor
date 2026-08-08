@@ -702,6 +702,21 @@ def _optional_int(value: Any) -> Optional[int]:
     return int(number)
 
 
+def _saved_toto_result(value: Any) -> Optional[str]:
+    """CSVで1.0/0.0/2.0へ数値化された実結果も正規ラベルへ戻す。"""
+
+    if isinstance(value, bool):
+        return None
+    text_value = _normalize_text(value)
+    if text_value in ("1", "0", "2"):
+        return text_value
+    number = pd.to_numeric(value, errors="coerce")
+    if not pd.isna(number) and float(number).is_integer():
+        normalized = str(int(number))
+        return normalized if normalized in ("1", "0", "2") else None
+    return None
+
+
 def _optional_datetime(value: Any) -> Optional[datetime]:
     if not _normalize_text(value):
         return None
@@ -723,7 +738,7 @@ def _round_from_saved_rows(rows: pd.DataFrame) -> TotoRound:
         match_time_value = _optional_datetime(row.get("match_time"))
         if match_time_value is None:
             continue
-        actual = _normalize_text(row.get("actual_result"))
+        actual = _saved_toto_result(row.get("actual_result"))
         matches.append(
             TotoMatch(
                 round_id=round_id,
@@ -732,7 +747,7 @@ def _round_from_saved_rows(rows: pd.DataFrame) -> TotoRound:
                 away_team=_canonical_toto_team(row.get("away_team")),
                 match_time=match_time_value,
                 stadium=_normalize_text(row.get("stadium")),
-                actual_result=actual if actual in ("1", "0", "2") else None,
+                actual_result=actual,
                 home_goals=_optional_int(row.get("home_goals")),
                 away_goals=_optional_int(row.get("away_goals")),
             )

@@ -4,10 +4,12 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 from backtest import (
     BacktestError,
     DEFAULT_BACKTEST_HISTORY_SEED_PATH,
+    _category_for_team,
     calculate_team_stats_as_of,
     fetch_historical_matches,
     load_historical_matches_csv,
@@ -116,6 +118,21 @@ class BacktestTest(unittest.TestCase):
         )
         self.assertEqual(stats["浦和レッズ"].recent_results[0].match_date.year, 2025)
         self.assertLess(stats["浦和レッズ"].average_scored, 9.0)
+
+    def test_historical_category_precedes_current_category(self) -> None:
+        past_match = OfficialMatch(
+            match_time=datetime(2024, 5, 1, 14, 0, tzinfo=JAPAN_TIMEZONE),
+            home_team="鹿島アントラーズ",
+            away_team="浦和レッズ",
+            home_goals=1,
+            away_goals=0,
+            category="J1",
+        )
+        with patch("backtest.get_team_category", return_value="J2"):
+            self.assertEqual(
+                _category_for_team("鹿島アントラーズ", [past_match]),
+                "J1",
+            )
 
     def test_historical_source_fetches_current_and_prior_period(self) -> None:
         source = FakeHistoricalSource(historical_matches())

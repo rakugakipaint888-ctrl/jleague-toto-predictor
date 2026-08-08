@@ -45,6 +45,7 @@ class TeamModelInput:
     rank: Optional[int] = None
     points: Optional[float] = None
     played: Optional[int] = None
+    season_draws: Optional[int] = None
     goal_difference: Optional[float] = None
     elo: Optional[float] = None
 

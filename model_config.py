@@ -164,3 +164,47 @@ OFFICIAL_RESULTS_CACHE_MAX_STALE_SECONDS = 7 * 24 * 60 * 60
 # ファイル形式を変更した場合は値を上げ、古いキャッシュを安全に破棄する。
 OFFICIAL_RESULTS_CACHE_VERSION = 2
 ELO_CACHE_VERSION = 1
+
+
+# Version7-A: Version6を変えずに重ねる引分専用モデルの初期値。
+# 係数0・Poisson重み1.0の初期状態はVersion6の3結果確率を完全再現する。
+VERSION7A_MODEL_VERSION = "Version7-A"
+VERSION7A_DEFAULT_DRAW_PARAMETERS = {
+    "base_draw_logit_bias": 0.0,
+    "poisson_draw_weight": 1.0,
+    "elo_closeness_weight": 0.0,
+    "expected_goal_closeness_weight": 0.0,
+    "team_draw_rate_weight": 0.0,
+    "recent_draw_rate_weight": 0.0,
+    "low_score_weight": 0.0,
+    "standing_closeness_weight": 0.0,
+    "candidate_threshold": 0.25,
+    "candidate_margin": 0.05,
+}
+
+# Version7-Aは引分関連だけを小規模探索する。Version7-Bで全体へ拡張する。
+VERSION7A_DRAW_SEARCH_SPACE = {
+    "base_draw_logit_bias": {"low": -0.50, "high": 0.80, "step": 0.05},
+    "poisson_draw_weight": {"low": 0.60, "high": 1.40, "step": 0.05},
+    "elo_closeness_weight": {"low": 0.0, "high": 1.20, "step": 0.10},
+    "expected_goal_closeness_weight": {
+        "low": 0.0,
+        "high": 1.50,
+        "step": 0.10,
+    },
+    "team_draw_rate_weight": {"low": 0.0, "high": 1.50, "step": 0.10},
+    "recent_draw_rate_weight": {"low": 0.0, "high": 1.00, "step": 0.10},
+    "low_score_weight": {"low": 0.0, "high": 1.00, "step": 0.10},
+    "standing_closeness_weight": {"low": 0.0, "high": 1.00, "step": 0.10},
+    "candidate_threshold": {"choices": (0.20, 0.25, 0.30, 0.35, 0.40)},
+    "candidate_margin": {"low": 0.02, "high": 0.15, "step": 0.01},
+}
+VERSION7A_TRIAL_COUNT_DEFAULT = 30
+VERSION7A_TRIAL_COUNT_CHOICES = (10, 30, 50, 100)
+VERSION7A_RANDOM_SEED = 20260808
+VERSION7A_OVERFIT_SCORE_GAP_THRESHOLD = 10.0
+# 引分F1だけを上げるTrialを避けるため、Version6比の許容悪化を小さく固定する。
+VERSION7A_OVERALL_BRIER_ALLOWANCE = 0.01
+VERSION7A_LOG_LOSS_ALLOWANCE = 0.02
+VERSION7A_CALIBRATION_ALLOWANCE = 0.015
+VERSION7A_ACCURACY_ALLOWANCE = 0.01

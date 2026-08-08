@@ -1,9 +1,17 @@
+from dataclasses import replace
 from datetime import datetime
 
 import pandas as pd
 import streamlit as st
 
 from analysis import render_analysis_tab
+from draw_analysis import render_draw_analysis_tab
+from draw_optimizer import load_active_draw_settings
+from draw_predictor import (
+    build_draw_context,
+    predict_draw_aware,
+    probability_percentages,
+)
 from data_loader import (
     TeamRecentStats,
     VenueRecord,
@@ -587,7 +595,9 @@ def create_average_input(
 
 st.title("⚽ Jリーグ toto予想")
 
-prediction_tab, analysis_tab = st.tabs(["予想", "分析"])
+prediction_tab, analysis_tab, draw_analysis_tab = st.tabs(
+    ["予想", "分析", "引分分析"]
+)
 
 with prediction_tab:
 
@@ -597,7 +607,7 @@ with prediction_tab:
     )
 
     st.warning(
-        "このアプリはVersion 6の検証モデルです。"
+        "このアプリはVersion7-Aの検証モデルです。"
         "的中や利益を保証するものではありません。"
     )
 
@@ -612,6 +622,7 @@ with prediction_tab:
         TOTO_ROUND_CACHE_VERSION,
     )
     current_toto_round = toto_round_result.toto_round
+    active_draw_settings = load_active_draw_settings()
 
     if current_toto_round is not None:
         prediction_matches = create_matches_from_toto_round(
@@ -695,10 +706,15 @@ with prediction_tab:
             Version6の予測式はVersion5と同一です。最新試合ほど強い時系列重み、
             ホーム／アウェイ別平均、
             Elo、1試合平均勝点・得失点差を順番に期待得点へ反映します。
-            4つのスイッチは独立しており、Version4～Version6比較も表示します。
+            4つのスイッチは独立しており、Version4～Version7-A比較も表示します。
 
             Version6ではtoto開催回、公式試合順、履歴、バックテスト、
             Brier Score、Log Loss、Calibration、ROIを追加しました。
+
+            Version7-AではVersion6のPoisson引分確率を基準に、期待得点差、
+            Elo差、引分率、ロースコア傾向を補正し、1・0・2を合計100%で
+            表示します。本命と引分候補は別に判定します。最適化設定は
+            引分分析タブでYESを選んだ場合だけ反映されます。
 
             Jリーグ公式データを取得できない場合はCSV、CSVもない場合は
             手入力へ自動で切り替わります。
@@ -980,6 +996,8 @@ with prediction_tab:
                 "away_points": away_detail_values["points"],
                 "home_played": home_detail_values["season_played"],
                 "away_played": away_detail_values["season_played"],
+                "home_season_draws": home_detail_values["season_draws"],
+                "away_season_draws": away_detail_values["season_draws"],
                 "home_goal_difference": home_detail_values["goal_difference"],
                 "away_goal_difference": away_detail_values["goal_difference"],
                 "home_standings_available": home_detail_values[
@@ -1016,6 +1034,40 @@ with prediction_tab:
 
         st.divider()
 
+    threshold_choices = (20, 25, 30, 35, 40)
+    active_threshold_percent = round(
+        active_draw_settings.candidate_threshold * 100
+    )
+    threshold_default = (
+        active_threshold_percent
+        if active_threshold_percent in threshold_choices
+        else "任意指定"
+    )
+    draw_candidate_threshold_choice = st.selectbox(
+        "引分候補閾値",
+        options=(*threshold_choices, "任意指定"),
+        index=(*threshold_choices, "任意指定").index(threshold_default),
+        format_func=lambda value: (
+            f"{value}%" if isinstance(value, int) else str(value)
+        ),
+        key="draw_candidate_threshold_choice",
+    )
+    if draw_candidate_threshold_choice == "任意指定":
+        draw_candidate_threshold_percent = st.number_input(
+            "引分候補閾値（%）",
+            min_value=0.0,
+            max_value=100.0,
+            value=float(active_threshold_percent),
+            step=1.0,
+            key="draw_candidate_threshold_custom",
+        )
+    else:
+        draw_candidate_threshold_percent = float(draw_candidate_threshold_choice)
+    prediction_draw_settings = replace(
+        active_draw_settings,
+        candidate_threshold=draw_candidate_threshold_percent / 100.0,
+    )
+
     submitted = st.button(
         "13試合を予想する",
         type="primary",
@@ -1036,65 +1088,98 @@ with prediction_tab:
             use_recent_weighting=use_recent_weighting,
             use_standings=use_standings_adjustment,
         )
+        draw_context_cutoff = datetime.now(JAPAN_TIMEZONE)
+        draw_contexts = {}
 
         for match in match_inputs:
             try:
+                home_input = TeamModelInput(
+                    team_name=match["home_team"],
+                    recent_scored_average=match["home_scored"],
+                    recent_conceded_average=match["home_conceded"],
+                    recent_matches=match["home_recent_results"],
+                    season_scored_average=match["home_season_scored"],
+                    season_conceded_average=match["home_season_conceded"],
+                    venue_record=match["home_record"],
+                    rank=match["home_rank"],
+                    points=(
+                        match["home_points"]
+                        if match["home_standings_available"]
+                        else None
+                    ),
+                    played=(
+                        match["home_played"]
+                        if match["home_standings_available"]
+                        else None
+                    ),
+                    season_draws=match["home_season_draws"],
+                    goal_difference=(
+                        match["home_goal_difference"]
+                        if match["home_standings_available"]
+                        else None
+                    ),
+                    elo=match["home_elo"],
+                )
+                away_input = TeamModelInput(
+                    team_name=match["away_team"],
+                    recent_scored_average=match["away_scored"],
+                    recent_conceded_average=match["away_conceded"],
+                    recent_matches=match["away_recent_results"],
+                    season_scored_average=match["away_season_scored"],
+                    season_conceded_average=match["away_season_conceded"],
+                    venue_record=match["away_record"],
+                    rank=match["away_rank"],
+                    points=(
+                        match["away_points"]
+                        if match["away_standings_available"]
+                        else None
+                    ),
+                    played=(
+                        match["away_played"]
+                        if match["away_standings_available"]
+                        else None
+                    ),
+                    season_draws=match["away_season_draws"],
+                    goal_difference=(
+                        match["away_goal_difference"]
+                        if match["away_standings_available"]
+                        else None
+                    ),
+                    elo=match["away_elo"],
+                )
                 pipeline = predict_match(
-                    TeamModelInput(
-                        team_name=match["home_team"],
-                        recent_scored_average=match["home_scored"],
-                        recent_conceded_average=match["home_conceded"],
-                        recent_matches=match["home_recent_results"],
-                        season_scored_average=match["home_season_scored"],
-                        season_conceded_average=match["home_season_conceded"],
-                        venue_record=match["home_record"],
-                        rank=match["home_rank"],
-                        points=(
-                            match["home_points"]
-                            if match["home_standings_available"]
-                            else None
-                        ),
-                        played=(
-                            match["home_played"]
-                            if match["home_standings_available"]
-                            else None
-                        ),
-                        goal_difference=(
-                            match["home_goal_difference"]
-                            if match["home_standings_available"]
-                            else None
-                        ),
-                        elo=match["home_elo"],
-                    ),
-                    TeamModelInput(
-                        team_name=match["away_team"],
-                        recent_scored_average=match["away_scored"],
-                        recent_conceded_average=match["away_conceded"],
-                        recent_matches=match["away_recent_results"],
-                        season_scored_average=match["away_season_scored"],
-                        season_conceded_average=match["away_season_conceded"],
-                        venue_record=match["away_record"],
-                        rank=match["away_rank"],
-                        points=(
-                            match["away_points"]
-                            if match["away_standings_available"]
-                            else None
-                        ),
-                        played=(
-                            match["away_played"]
-                            if match["away_standings_available"]
-                            else None
-                        ),
-                        goal_difference=(
-                            match["away_goal_difference"]
-                            if match["away_standings_available"]
-                            else None
-                        ),
-                        elo=match["away_elo"],
-                    ),
+                    home_input,
+                    away_input,
                     options=model_options,
                 )
-                probabilities = pipeline.version5_probabilities
+                version6_probabilities = pipeline.version5_probabilities
+                home_category = TEAM_CATEGORY_BY_NAME.get(match["home_team"], "")
+                away_category = TEAM_CATEGORY_BY_NAME.get(match["away_team"], "")
+                context_category = (
+                    home_category if home_category == away_category else ""
+                )
+                if context_category not in draw_contexts:
+                    draw_contexts[context_category] = build_draw_context(
+                        match_data_result.completed_matches,
+                        draw_context_cutoff,
+                        category=context_category,
+                    )
+                draw_prediction = predict_draw_aware(
+                    version6_probabilities,
+                    pipeline.expected_final.home,
+                    pipeline.expected_final.away,
+                    home_input,
+                    away_input,
+                    context=draw_contexts[context_category],
+                    settings=prediction_draw_settings,
+                )
+                probabilities = {
+                    "home_win": draw_prediction.probabilities["1"],
+                    "draw": draw_prediction.probabilities["0"],
+                    "away_win": draw_prediction.probabilities["2"],
+                    "home_goals": version6_probabilities["home_goals"],
+                    "away_goals": version6_probabilities["away_goals"],
+                }
 
                 confidence = get_confidence_label(
                     [
@@ -1111,16 +1196,25 @@ with prediction_tab:
                     draw=probabilities["draw"],
                     away_win=probabilities["away_win"],
                 )
+                version7a_percentages = probability_percentages(
+                    draw_prediction.probabilities
+                )
+                version6_percentages = probability_percentages(
+                    version6_probabilities
+                )
+                version4_percentages = probability_percentages(
+                    pipeline.version4.probabilities
+                )
 
                 results.append(
                     {
                         "試合": match["match_number"],
                         "toto_round": match["toto_round"],
                         "toto_match_number": match["toto_match_number"],
-                        "prediction_version": "Version6",
+                        "prediction_version": "Version7-A",
                         "actual_result": match["actual_result"],
                         "hit": (
-                            pipeline.version5_prediction == match["actual_result"]
+                            draw_prediction.prediction == match["actual_result"]
                             if match["actual_result"] in ("1", "0", "2")
                             else None
                         ),
@@ -1132,22 +1226,20 @@ with prediction_tab:
                             f' vs '
                             f'{match["away_team"]}'
                         ),
-                        "1": round(
-                            probabilities["home_win"] * 100,
-                            1,
-                        ),
-                        "0": round(
-                            probabilities["draw"] * 100,
-                            1,
-                        ),
-                        "2": round(
-                            probabilities["away_win"] * 100,
-                            1,
-                        ),
-                        "本命": pipeline.version5_prediction,
+                        "1": version7a_percentages["1"],
+                        "0": version7a_percentages["0"],
+                        "2": version7a_percentages["2"],
+                        "本命": draw_prediction.prediction,
                         "最高確率": round(
-                            pipeline.version5_top_probability * 100,
+                            draw_prediction.top_probability * 100,
                             1,
+                        ),
+                        "引分候補": (
+                            "候補" if draw_prediction.is_draw_candidate else "—"
+                        ),
+                        "draw_candidate": draw_prediction.is_draw_candidate,
+                        "draw_candidate_reasons": "／".join(
+                            draw_prediction.candidate_reasons
                         ),
                         "判定": confidence,
                         "予想スコア": (
@@ -1276,35 +1368,37 @@ with prediction_tab:
                         "version4_prediction": pipeline.version4.prediction,
                         "version5_prediction": pipeline.version5_prediction,
                         "version6_prediction": pipeline.version5_prediction,
-                        "version6_home_win": round(
-                            probabilities["home_win"] * 100,
-                            1,
-                        ),
-                        "version6_draw": round(
-                            probabilities["draw"] * 100,
-                            1,
-                        ),
-                        "version6_away_win": round(
-                            probabilities["away_win"] * 100,
-                            1,
-                        ),
+                        "version7a_prediction": draw_prediction.prediction,
+                        "version6_home_win": version6_percentages["1"],
+                        "version6_draw": version6_percentages["0"],
+                        "version6_away_win": version6_percentages["2"],
                         "version6_top_probability": round(
                             pipeline.version5_top_probability * 100,
                             1,
                         ),
+                        "version7a_home_win": version7a_percentages["1"],
+                        "version7a_draw": version7a_percentages["0"],
+                        "version7a_away_win": version7a_percentages["2"],
+                        "version7a_top_probability": round(
+                            draw_prediction.top_probability * 100,
+                            1,
+                        ),
+                        "poisson_draw_probability": round(
+                            draw_prediction.poisson_draw_probability * 100,
+                            1,
+                        ),
+                        "adjusted_draw_probability": round(
+                            draw_prediction.adjusted_draw_probability * 100,
+                            1,
+                        ),
                         "prediction_changed": pipeline.prediction_changed,
-                        "version4_home_win": round(
-                            pipeline.version4.probabilities["home_win"] * 100,
-                            1,
+                        "version7a_prediction_changed": (
+                            draw_prediction.prediction
+                            != pipeline.version5_prediction
                         ),
-                        "version4_draw": round(
-                            pipeline.version4.probabilities["draw"] * 100,
-                            1,
-                        ),
-                        "version4_away_win": round(
-                            pipeline.version4.probabilities["away_win"] * 100,
-                            1,
-                        ),
+                        "version4_home_win": version4_percentages["1"],
+                        "version4_draw": version4_percentages["0"],
+                        "version4_away_win": version4_percentages["2"],
                         "version4_top_probability": round(
                             pipeline.version4.top_probability * 100,
                             1,
@@ -1384,7 +1478,7 @@ with prediction_tab:
             ):
                 st.caption(
                     f"第{current_toto_round.round_id}回の"
-                    "Version4～Version6予想を履歴CSVへ保存しました。"
+                    "Version4～Version7-A予想を履歴CSVへ保存しました。"
                 )
 
             st.success("13試合の予想が完了しました。")
@@ -1412,6 +1506,7 @@ with prediction_tab:
                         "0",
                         "2",
                         "本命",
+                        "引分候補",
                         "判定",
                         "予想スコア",
                     ]
@@ -1420,7 +1515,7 @@ with prediction_tab:
                 hide_index=True,
             )
 
-            st.header("Version4～Version6比較")
+            st.header("Version4～Version7-A比較")
 
             comparison_df = pd.DataFrame(
                 [
@@ -1430,9 +1525,11 @@ with prediction_tab:
                         "Version4本命": result["version4_prediction"],
                         "Version5本命": result["version5_prediction"],
                         "Version6本命": result["version6_prediction"],
+                        "Version7-A本命": result["version7a_prediction"],
                         "Version4勝率": result["version4_top_probability"],
-                        "Version5勝率": result["最高確率"],
+                        "Version5勝率": result["version6_top_probability"],
                         "Version6勝率": result["version6_top_probability"],
+                        "Version7-A勝率": result["version7a_top_probability"],
                         "Version4期待得点": (
                             f'{result["home_expected_before_version5"]:.2f}-'
                             f'{result["away_expected_before_version5"]:.2f}'
@@ -1442,6 +1539,10 @@ with prediction_tab:
                             f'{result["away_expected_after_version5"]:.2f}'
                         ),
                         "Version6期待得点": (
+                            f'{result["home_expected_after_version6"]:.2f}-'
+                            f'{result["away_expected_after_version6"]:.2f}'
+                        ),
+                        "Version7-A期待得点": (
                             f'{result["home_expected_after_version6"]:.2f}-'
                             f'{result["away_expected_after_version6"]:.2f}'
                         ),
@@ -1456,12 +1557,23 @@ with prediction_tab:
                             != result["version6_prediction"]
                             else "変更なし"
                         ),
+                        "V6→V7-A変更": (
+                            "● 変更あり"
+                            if result["version7a_prediction_changed"]
+                            else "変更なし"
+                        ),
                     }
                     for result in results
                 ]
             )
             changed_match_count = int(result_df["prediction_changed"].sum())
+            version7a_changed_match_count = int(
+                result_df["version7a_prediction_changed"].sum()
+            )
             st.session_state["version5_changed_match_count"] = changed_match_count
+            st.session_state["version7a_changed_match_count"] = (
+                version7a_changed_match_count
+            )
 
             if changed_match_count:
                 st.warning(
@@ -1469,6 +1581,13 @@ with prediction_tab:
                 )
             else:
                 st.info("Version5で本命が変化した試合はありません。")
+            if version7a_changed_match_count:
+                st.warning(
+                    "Version7-Aで本命が変化した試合："
+                    f"{version7a_changed_match_count}試合"
+                )
+            else:
+                st.info("現在設定ではVersion6から本命が変化した試合はありません。")
 
             st.dataframe(
                 comparison_df,
@@ -1502,7 +1621,8 @@ with prediction_tab:
                     )
 
                     st.write(
-                        f'**Version6本命：{result["version6_prediction"]}** ／ '
+                        f'**Version7-A本命：{result["version7a_prediction"]}** ／ '
+                        f'Version6本命：{result["version6_prediction"]} ／ '
                         f'Version5本命：{result["version5_prediction"]} ／ '
                         f'Version4本命：{result["version4_prediction"]}'
                     )
@@ -1510,6 +1630,22 @@ with prediction_tab:
                     st.write(
                         f'予想スコア：'
                         f'{result["予想スコア"]}'
+                    )
+
+                    st.write(
+                        "引分候補："
+                        f'{result["引分候補"]}'
+                        + (
+                            f'（{result["draw_candidate_reasons"]}）'
+                            if result["draw_candidate_reasons"]
+                            else ""
+                        )
+                    )
+
+                    st.caption(
+                        "引分確率：Poisson "
+                        f'{result["poisson_draw_probability"]:.1f}% → '
+                        f'Version7-A {result["adjusted_draw_probability"]:.1f}%'
                     )
 
                     st.write(
@@ -1667,5 +1803,12 @@ with analysis_tab:
     render_analysis_tab(
         history_manager=toto_history_manager,
         prediction_history_manager=prediction_history_manager,
+        fallback_matches=match_data_result.completed_matches,
+    )
+
+
+with draw_analysis_tab:
+    render_draw_analysis_tab(
+        history_manager=toto_history_manager,
         fallback_matches=match_data_result.completed_matches,
     )

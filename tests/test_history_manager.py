@@ -2,7 +2,7 @@
 
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -11,7 +11,9 @@ import requests
 from history_manager import (
     JAPAN_TIMEZONE,
     TotoHistoryManager,
+    TotoMatch,
     TotoOfficialDataSource,
+    TotoRound,
     create_matches_from_toto_round,
     parse_round_catalog,
     parse_toto_info_page,
@@ -122,6 +124,43 @@ class HistoryManagerTest(unittest.TestCase):
             current_result = manager.load_current_round(current)
             self.assertTrue(current_result.is_loaded)
             self.assertEqual(current_result.source_name, "現在データ")
+
+    def test_saved_numeric_results_keep_draw_zero_when_csv_has_blank_rows(self) -> None:
+        kickoff = datetime(2025, 6, 21, 15, 0, tzinfo=JAPAN_TIMEZONE)
+
+        def saved_round(round_id: int, completed: bool) -> TotoRound:
+            outcomes = ("1", "0", "2")
+            return TotoRound(
+                round_id=round_id,
+                matches=tuple(
+                    TotoMatch(
+                        round_id=round_id,
+                        match_number=number,
+                        home_team="鹿島アントラーズ",
+                        away_team="浦和レッズ",
+                        match_time=kickoff + timedelta(minutes=number),
+                        actual_result=(
+                            outcomes[(number - 1) % 3] if completed else None
+                        ),
+                    )
+                    for number in range(1, 14)
+                ),
+            )
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            manager = TotoHistoryManager(
+                csv_path=Path(temporary_directory) / "toto_rounds.csv"
+            )
+            self.assertTrue(manager.save_round(saved_round(1548, True)))
+            self.assertTrue(manager.save_round(saved_round(1644, False)))
+            loaded = manager.load_saved_round(1548)
+
+        self.assertIsNotNone(loaded)
+        self.assertTrue(loaded.is_complete)
+        self.assertEqual(
+            [match.actual_result for match in loaded.matches[:3]],
+            ["1", "0", "2"],
+        )
 
 
 if __name__ == "__main__":

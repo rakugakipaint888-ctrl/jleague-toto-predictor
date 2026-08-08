@@ -45,7 +45,8 @@ match_number,match_date,home_team,away_team,home_scored,home_conceded,away_score
 
 ## 実行時キャッシュと履歴
 
-Version6は`data/cache/`と`data/history/`を自動作成し、次を保存します。
+Version6～Version7-Aは`data/cache/`、`data/history/`、`data/config/`を
+自動作成し、次を保存します。
 
 - `official_match_results.json`：現行・前シーズン相当の試合結果、順位表、
   直近5試合、シーズン・会場別クラブ成績
@@ -54,13 +55,20 @@ Version6は`data/cache/`と`data/history/`を自動作成し、次を保存し�
 - `backtest_match_history.csv`：バックテスト用Jリーグ履歴の動的保存CSV
 - `../history/prediction_history.csv`：開催回・試合番号・Version別の予想履歴と
   的中率、Brier Score、Log Loss、Calibration、的中期待値、ROI
+- `../history/version7a_optimization_history.csv`：実行日時、Trial数、時系列の
+  Training／Validation期間・試合数、Best Score・係数、全体・引分指標、
+  Version6比較、乱数seed
+- `../config/version7a_draw_settings.json`：画面でYESを選んだ場合だけ更新する
+  Version7-A採用済み引分設定
+- `../config/version7a_backups/`：採用直前の設定を復元するJSONバックアップ
 
 `data/reference/jleague_history_2024_2025.csv`は、公式取得と動的保存CSVの両方が
 利用できない初回起動でも直近1シーズン以上を検証できる読み取り用データです。
 実行時に更新されるファイルとは分離してGit管理します。
 
-`data/cache/`と`data/history/`のファイルは入力CSVではなく、取得失敗時の継続と
-検証履歴のための実行時ファイルで、Git管理対象外です。`data/reference/`だけは
+`data/cache/`、`data/history/`、`data/config/`のファイルは入力CSVではなく、
+取得失敗時の継続、検証履歴、採用設定のための実行時ファイルで、Git管理対象外です。
+`data/reference/`だけは
 初回フォールバック用の読み取り専用データとしてGit管理します。`toto_rounds.csv`は
 公式→保存CSV→現在データ→エラー表示のフォールバックで使います。
 `prediction_history.csv`を削除すると累積分析履歴も失われるため、必要に応じて
@@ -104,3 +112,21 @@ Version5までの列を残したまま、次の列を追加します。
 入力、予想一覧、Version比較、試合詳細、予想結果CSV、予想履歴CSVはすべて
 スポーツくじ公式の第1～13試合順です。公式試合順を取得できない場合だけ、
 保存済み開催回CSV、現在のJリーグ試合データの順でフォールバックします。
+
+## 予想結果CSVのVersion7-A追加列
+
+Version6までの列を残し、Version6とVersion7-Aを同じ行で再比較できるように
+次の列を追加します。
+
+- `version6_prediction` / `version7a_prediction`
+- `version6_home_win` / `version6_draw` / `version6_away_win`
+- `version7a_home_win` / `version7a_draw` / `version7a_away_win`
+- `version6_top_probability` / `version7a_top_probability`
+- `poisson_draw_probability` / `adjusted_draw_probability`
+- `draw_candidate` / `draw_candidate_reasons`
+- `version7a_prediction_changed`
+
+`1`、`0`、`2`の表示確率は小数1桁でも合計100.0%になるよう丸めます。`0`は
+数値0、文字列`"0"`、CSV読込後の`0.0`を同じ引分ラベルとして保存・評価します。
+Version7-Aの最適化履歴は既存の予想履歴や開催回CSVへ混在させません。列構成が
+不正な最適化履歴CSVは上書きせず、画面で保存失敗を通知します。

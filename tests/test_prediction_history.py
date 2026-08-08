@@ -76,15 +76,26 @@ class PredictionHistoryTest(unittest.TestCase):
         self.assertEqual(finalized["total_hits"].tolist(), [12] * 13)
         self.assertTrue((finalized["accuracy"] == 12 / 13).all())
 
-    def test_prediction_frame_expands_to_three_versions_and_saves_csv(self) -> None:
+    def test_numeric_draw_zero_is_not_lost_when_screen_results_are_finalized(self) -> None:
+        frame = pd.DataFrame(
+            {
+                "actual_result": [0.0] * 13,
+                "本命": [0] * 13,
+            }
+        )
+        finalized = finalize_prediction_results(frame)
+        self.assertTrue(finalized["hit"].all())
+        self.assertTrue((finalized["total_hits"] == 13).all())
+
+    def test_prediction_frame_expands_to_four_versions_and_saves_csv(self) -> None:
         records = records_from_prediction_results(
             result_frame(),
             round_with_results(),
         )
-        self.assertEqual(len(records), 39)
+        self.assertEqual(len(records), 52)
         self.assertEqual(
             {record.prediction_version for record in records},
-            {"Version4", "Version5", "Version6"},
+            {"Version4", "Version5", "Version6", "Version7-A"},
         )
         self.assertTrue(all(record.total_hits == 13 for record in records))
 
@@ -100,7 +111,7 @@ class PredictionHistoryTest(unittest.TestCase):
             )
             loaded = manager.load()
 
-        self.assertEqual(len(loaded), 39)
+        self.assertEqual(len(loaded), 52)
         self.assertEqual(tuple(loaded.columns), HISTORY_COLUMNS)
         for required in (
             "toto_round",
@@ -152,9 +163,9 @@ class PredictionHistoryTest(unittest.TestCase):
             self.assertTrue(manager.save_records(complete_records))
             loaded = manager.load()
 
-        self.assertEqual(len(loaded), 78)
+        self.assertEqual(len(loaded), 104)
         completed = loaded.loc[loaded["toto_round"] == 1549]
-        self.assertEqual(len(completed), 39)
+        self.assertEqual(len(completed), 52)
         self.assertEqual(set(completed["actual_result"]), {"1"})
         self.assertTrue((completed["total_hits"] == 13).all())
 

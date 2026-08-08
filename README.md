@@ -23,14 +23,158 @@ J1・J2・J3の試合を対象に、直近成績、会場別成績、順位表�
 - Elo差による期待得点補正とON/OFF切替
 - カテゴリー内順位付きElo一覧とElo順の並べ替え
 - 本命、信頼度、予想スコア、予想理由の表示
-- 開催回をキーにしたVersion4～Version6の予想・実結果履歴CSV
+- 開催回をキーにしたVersion4～Version7-Aの予想・実結果履歴CSV
 - 開催日時点より前のデータだけを使うバックテスト
 - 的中率、1・0・2別正答率、Brier Score、Log Loss、Calibration、ROI
 - 開催回別・累積・Version別の表とグラフを備えた分析タブ
 - CSV読込と予想結果・予想履歴CSV保存
-- Version4～Version6の13試合比較表示
+- Version4～Version7-Aの13試合比較表示
+- Version7-Aの引分候補、引分専用評価、確率帯別Calibration
+- 時系列Training／Validation分離とOptuna小規模探索
+- Version6とVersion7-Aの同一Validation比較、明示的な設定採用・復元
 - 公式データ → CSV → 手入力の自動切替
 - 補正別の欠損フォールバックとVersion4予測への最終フォールバック
+
+## Version7-A
+
+Version7-Aは、Version6で本命「0」がほとんど選ばれなかった状態を分析し、
+引分を独立したクラスとして評価・補正する小規模な改善段階です。Version1～6の
+期待得点、Elo、会場別、順位等、バックテスト、履歴、分析、確率指標、ROIは残し、
+その上へ引分専用モデルを重ねています。
+
+採用設定がない初期状態は、全係数0・Poisson重み1.0です。この状態では
+Version7-Aの1・0・2確率と本命はVersion6を再現します。最適化結果は自動採用せず、
+画面で`YES`を押した場合だけ通常予想へ反映します。
+
+### 現状調査と修正
+
+- Version6の引分確率は残差ではなく、Poissonで計算した`0-0`～`6-6`の対角確率を
+  直接合計し、1・0・2を正規化していた
+- Version6の本命判定は`1`、`0`、`2`の3候補に対する最大確率で、`0`は
+  `argmax`から除外されていなかった
+- 予想スコアは最頻の単一スコア、本命は全スコアを集約した3結果確率の最大値で
+  あるため、`1-1`でも本命が`1`または`2`になること自体は不整合ではない
+- 保存開催回CSVで未確定の空欄と実結果が混在すると、pandasが`0`を`0.0`として
+  読み、文字列比較で結果が無効化される不具合を修正した。`1.0`、`0.0`、`2.0`も
+  必ず正規ラベルへ戻し、数値0をFalseや欠損として扱わない
+- 過去バックテストの順位カテゴリーで、当時の公式履歴より現在所属カテゴリーを
+  優先していた箇所を修正した。昇降格後のカテゴリーを過去時点へ持ち込まない
+
+調査上、Version6で引分本命が少ない主因は、Poissonの引分確率が有効な候補では
+あってもホーム勝ち・アウェイ勝ちの集約確率を上回りにくいモデル特性でした。
+加えて、上記CSV読込不具合はバックテスト結果の保存・再読込を妨げていました。
+
+### 3クラス確率と引分補正
+
+最終確率は`P(1)`、`P(0)`、`P(2)`の3クラスとして保持します。入力に欠損、NaN、
+Infinity、負数があっても有限・非負へ補正し、内部は合計1.0、画面の小数1桁表示も
+最大剰余法で合計100.0%にします。
+
+引分の基準確率はVersion6のPoisson対角和です。引分確率を
+`1 - P(1) - P(2)`だけで作ることはありません。補正後の引分確率を決めた後、
+残り確率をVersion6のホーム勝ち／アウェイ勝ちの相対比に従って配分するため、
+既存の勝敗方向を維持します。本命は補正・正規化後の3確率の最大値です。
+
+補正には、対象試合開始前に既存データから確認できる次の要素を使います。
+
+- Poisson引分確率、期待得点差、Elo差
+- 両チームの直近・シーズン平均得点と平均失点
+- チーム別、ホーム／アウェイ別、直近5試合の引分率
+- リーグ別・シーズン別引分率
+- Poissonと過去実績の0-0、1-1、ロースコア傾向
+- 順位差、1試合平均勝点差、1試合平均得失点差
+
+差が小さいほど引分を上げ、差が大きいほど下げられる連続量をlog-odds上で
+組み合わせます。一律`+10%`の固定判定ではなく、各係数を小規模探索対象にします。
+リーグ別標本が30試合未満の場合はJ1～J3全体へ安全にフォールバックし、存在しない
+外部情報を推測で補いません。
+
+### 引分候補
+
+本命とは別に、次のいずれかで「引分候補」を表示します。
+
+- 引分確率が3結果中最大
+- 引分確率が設定閾値以上
+- 1位確率と引分確率との差が設定値以内
+
+通常予想画面の閾値は20%、25%、30%、35%、40%または任意値から選択できます。
+候補数そのものは最適化Scoreに加点せず、候補PrecisionとRecallのF1だけを小さく
+評価します。
+
+### 引分専用評価とグラフ
+
+「引分分析」タブは、TrainingとValidationの両方についてVersion6とVersion7-Aを
+同じ試合で比較します。
+
+- 実際の引分試合数、引分予測試合数、引分的中数
+- 引分Precision：引分本命のうち実際に引分だった割合
+- 引分Recall：実際の引分のうち引分本命で拾えた割合
+- 引分F1：PrecisionとRecallの調和平均
+- 引分Brier：引分か否かの二値Brier Score
+- 引分Calibration：引分確率と実際の引分率の加重絶対差
+- 引分予測時の平均確率、全試合の実際の引分率、引分予測率
+- 1・0・2別正答率、全体的中率、全体Brier、Log Loss、Calibration
+
+Precision、Recall、F1は分母0件の場合に0.0を返します。引分確率帯は
+`0–20%`、`20–25%`、`25–30%`、`30–35%`、`35–40%`、`40%以上`の6区分で、
+試合数、平均予測確率、実引分数、実引分率、Calibration差を表示します。
+グラフは1／0／2別成績、引分Calibration、確率帯別実引分率、Trial Score推移の
+4種類だけです。
+
+### Training／Validationと未来データ禁止
+
+開催回はランダムシャッフルせず、シーズン単位の分離を優先します。画面の既定は
+2024～2025年をTraining、最新年をValidationとし、シーズンが1つしかない場合だけ
+時系列の過去80%／直近20%へ分割します。Training最終日時がValidation開始日時
+以後になる指定は拒否します。
+
+各開催回では最初の試合日の`00:00 JST`をcutoffとし、それより前に確定した
+試合だけから、直近5試合、シーズン・会場別成績、順位相当値、Elo、引分率、
+0-0・1-1・ロースコア率を再構成します。現在順位、シーズン終了時の最終勝点、
+未来の試合結果・Elo・直近成績は使用しません。OptunaはTrainingだけでTrialを
+探索し、最良設定を確定した後にValidationを評価します。
+
+### Optuna小規模探索とScore
+
+Trial数は10、30、50、100または任意値を選べ、初期値は30です。100超も入力
+できますが、Version7-Aの基本運用は最大100 Trialと表示します。探索対象は次の
+引分関連10項目だけです。
+
+- 基本引分logit補正、Poisson引分確率の重み
+- Elo差、期待得点差、チーム引分率、直近引分率の重み
+- ロースコア、順位・勝点・得失点差の近さの重み
+- 引分候補閾値、1位確率との差の閾値
+
+Scoreは、全体Brier、Log Loss、Calibration、的中率、引分F1、引分Brier、
+引分Calibration、引分候補F1を0～100へまとめます。Version6比で全体確率品質や
+的中率が許容幅を超えて悪化したTrialへペナルティを付け、引分F1だけを上げる
+設定を優先しません。乱数seedは固定・保存します。Optunaが未インストールの場合は
+`requirements.txt`からの導入案内を表示し、通常予想は停止しません。
+
+### 保存、採用、復元
+
+最適化実行結果は既存CSVと分離して
+`data/history/version7a_optimization_history.csv`へ追記します。実行日時、Version、
+Trial数、Training／Validation期間・試合数、Best Trial、Best Score、最適係数、
+全体・引分指標、Version6比較、乱数seedを保存します。列が壊れた既存CSVは
+上書きせず、画面に保存失敗を表示します。
+
+「Version7-A最適設定を採用しますか？」で`YES`を押した場合だけ
+`data/config/version7a_draw_settings.json`を更新します。`NO`はファイルを変更しません。
+採用前設定は`data/config/version7a_backups/`へ保存し、「直前設定へ戻す」で復元
+できます。最適化完了、CSV保存、画面表示だけでは通常予想の設定は変わりません。
+
+### 既知の制限とVersion7-B
+
+Version7-Aは少数開催回・最大100 Trial程度を前提とするため、Validationの標本差や
+過学習の影響を受けます。Validationの改善は将来試合での改善を保証しません。
+負傷者、出場停止、予想先発など既存データにない情報は使いません。
+
+Version7-Bでは、既存モデル全体の本格最適化、Random／Grid Search、2段階探索、
+1,000～50,000モデル探索、高度なWalk Forward、Bootstrap、95%信頼区間、
+感度・安定性分析、大規模ランキング、買い目最適化を段階的に検討します。
+これらはVersion7-Aには実装していません。AI自動改善提案、負傷者・出場停止、
+note連携も対象外です。
 
 ## Version6
 
@@ -367,7 +511,7 @@ Eloデータを取得できないため、Elo補正なしで計算しました�
 ## モジュール構成
 
 - `teams.py`：J1・J2・J3のクラブ情報、名称正規化、プルダウン用データ
-- `model_config.py`：Elo、Version5、キャッシュの設定値
+- `model_config.py`：Elo、Version5、Version7-A、キャッシュの設定値
 - `config.py`：Version4までのimport互換用ブリッジ
 - `elo_rating.py`：Elo計算、期待得点補正、Eloキャッシュ
 - `form_adjuster.py`：直近5試合の時系列重み付け
@@ -380,6 +524,10 @@ Eloデータを取得できないため、Elo補正なしで計算しました�
 - `backtest.py`：開催日時点のデータ再構成とVersion4～Version6再実行
 - `metrics.py`：的中率、Brier Score、Log Loss、Calibration、ROI
 - `analysis.py`：開催回集計、Version比較、分析タブ、グラフ
+- `draw_predictor.py`：引分特徴量、3クラス正規化、引分補正・候補判定
+- `draw_evaluation.py`：引分専用指標、確率帯評価、複合Score
+- `draw_optimizer.py`：時系列分割、Optuna小規模探索、保存・採用・復元
+- `draw_analysis.py`：Version7-A比較表、4グラフ、最適化UI
 - `app.py`：各モジュールを接続する入力・予想画面
 
 `elo_rating.py`は`teams.py`をimportしません。クラブ構成と名称正規化関数は
@@ -436,6 +584,16 @@ Version6ではさらに次の列を予想結果CSVへ追加します。
 - `accuracy`
 - `prediction_date`
 
+Version7-Aでは既存列を残したまま、次の列を追加します。
+
+- `version6_prediction` / `version7a_prediction`
+- `version6_home_win` / `version6_draw` / `version6_away_win`
+- `version7a_home_win` / `version7a_draw` / `version7a_away_win`
+- `version6_top_probability` / `version7a_top_probability`
+- `poisson_draw_probability` / `adjusted_draw_probability`
+- `draw_candidate` / `draw_candidate_reasons`
+- `version7a_prediction_changed`
+
 予想履歴CSVは上記キーに加え、Versionごとの1・0・2確率、期待得点、
 `brier_score`、`log_loss`、`calibration`、`expected_hits`、`stake_yen`、
 `payout_yen`、`roi`を保存します。すべてtoto公式試合番号順です。
@@ -460,11 +618,16 @@ Version6ではさらに次の列を予想結果CSVへ追加します。
 ├── backtest.py               # 時点バックテスト・データリーク防止
 ├── metrics.py                # 確率評価指標・ROI
 ├── analysis.py               # 分析集計・表・グラフ
+├── draw_predictor.py         # 引分特徴量・確率補正・候補判定
+├── draw_evaluation.py        # 引分専用評価・確率帯・Score
+├── draw_optimizer.py         # 時系列分割・Optuna・保存・設定採用
+├── draw_analysis.py          # 引分分析タブ・比較表・グラフ
 ├── data/
 │   ├── README.md             # matches.csvと実行時キャッシュの仕様
 │   ├── reference/            # 公式取得失敗時の2024～2025年結果CSV
 │   ├── cache/                # 実行時に自動生成（Git管理外）
-│   └── history/              # 予想履歴CSV（Git管理外）
+│   ├── history/              # 予想・最適化履歴CSV（Git管理外）
+│   └── config/               # 採用済み引分設定・バックアップ（Git管理外）
 ├── tests/
 │   ├── test_app.py           # 13試合・画面・Elo・CSV統合テスト
 │   ├── test_history_manager.py # toto公式順・開催回・フォールバック
@@ -472,6 +635,10 @@ Version6ではさらに次の列を予想結果CSVへ追加します。
 │   ├── test_backtest.py      # 時点再計算・未来データ除外
 │   ├── test_metrics.py       # Brier・Log Loss・Calibration・ROI
 │   ├── test_analysis.py      # 開催回・累積・Version集計
+│   ├── test_draw_predictor.py # 3クラス確率・引分特徴・候補
+│   ├── test_draw_evaluation.py # Precision・Recall・F1・確率帯
+│   ├── test_draw_optimizer.py # 時系列分割・10/30 Trial・採用復元
+│   ├── test_draw_analysis.py # 比較表・グラフ入力
 │   ├── test_data_loader.py   # 公式取得・履歴キャッシュ・フォールバック
 │   ├── test_elo_rating.py    # Elo式・補正・増分キャッシュ
 │   ├── test_prediction.py    # Version3ポアソン計算の回帰テスト
@@ -506,7 +673,8 @@ python -m unittest discover -s tests -v
 - Version4：Eloレーティング導入
 - Version5：直近成績・ホーム／アウェイ成績・順位等補正
 - Version6：toto公式順・開催回・バックテスト・履歴・分析・確率指標・ROI
-- Version7：Optuna等による補正係数・ハイパーパラメータ自動探索
+- Version7-A：引分予想強化、引分専用評価、時系列分割、Optuna小規模探索
+- Version7-B：既存モデル全体の本格探索、Walk Forward・安定性評価の高度化
 - Version8：AIによる重み自動調整・モデル改善提案
 - Version9：独自判断入力・AIコメント生成
 - Version10：note記事自動生成
