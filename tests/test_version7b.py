@@ -510,17 +510,43 @@ class Version7BSearchAndReportingTest(unittest.TestCase):
                 partial_path=root / "actual-optuna-10.csv",
             )
             ranking_path = root / "actual-ranking.csv"
+            history_path = root / "actual-history.csv"
             self.assertTrue(save_model_ranking(ten, path=ranking_path))
+            self.assertTrue(save_optimization_history(ten, path=history_path))
             ranking_lines = ranking_path.read_text(encoding="utf-8-sig").splitlines()
+            history_lines = history_path.read_text(encoding="utf-8-sig").splitlines()
+            partial_lines = (root / "actual-optuna-10.csv").read_text(
+                encoding="utf-8-sig"
+            ).splitlines()
 
         self.assertEqual(len(one.all_trials), 1)
         self.assertEqual(len(one.ranking), 1)
         self.assertEqual(len(ten.all_trials), 10)
         self.assertEqual(len(ten.ranking), 10)
         self.assertEqual(len(ranking_lines), 11)
+        self.assertEqual(len(history_lines), 2)
+        self.assertEqual(len(partial_lines), 11)
         self.assertTrue(
             all(record.final_validation is not None for record in ten.ranking)
         )
+        self.assertGreater(
+            len({record.parameters for record in ten.all_trials}),
+            1,
+        )
+        self.assertGreater(
+            len(
+                {
+                    tuple(record.selection_validation.rows[0].probabilities.values())
+                    for record in ten.all_trials
+                }
+            ),
+            1,
+        )
+        final = ten.best_final_validation
+        self.assertTrue(math.isfinite(ten.best_score))
+        self.assertTrue(math.isfinite(final.metrics.brier_score))
+        self.assertTrue(math.isfinite(final.metrics.log_loss))
+        self.assertTrue(math.isfinite(final.draw.f1_score))
 
     def test_random_grid_and_two_stage_search_complete(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

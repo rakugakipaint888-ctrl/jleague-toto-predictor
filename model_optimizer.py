@@ -26,7 +26,7 @@ from version7b_config import (
     VERSION7B_RANDOM_SEED,
     VERSION7B_RANKING_LIMIT,
 )
-from version7b_pipeline import ensure_version7b_model_pipeline
+from version7b_runtime import ensure_version7b_model_call_path
 from backtest import (
     BacktestDataLeakError,
     BacktestError,
@@ -38,8 +38,7 @@ from backtest import (
 )
 from data_loader import JAPAN_TIMEZONE, OfficialMatch, TeamRecentStats
 from draw_evaluation import normalize_toto_label
-from draw_predictor import DrawContext, build_draw_context, predict_draw_aware
-from elo_rating import generate_elo_ratings, get_team_elo
+from draw_predictor import DrawContext
 from history_manager import TotoHistoryManager, TotoMatch, TotoRound
 from metrics import DEFAULT_TOTO_STAKE_YEN, toto_payout_for_hits
 from model_config import VERSION7A_DRAW_SEARCH_SPACE
@@ -382,6 +381,7 @@ def prepare_model_round(
         team_name: _historical_category(team_name, completed)
         for team_name in target_teams
     }
+    runtime_modules = ensure_version7b_model_call_path()
     contexts: dict[str, DrawContext] = {}
     prepared_matches = []
     for toto_match in sorted(toto_round.matches, key=lambda item: item.match_number):
@@ -393,7 +393,7 @@ def prepare_model_round(
         if league not in ("J1", "J2", "J3"):
             league = ""
         if league not in contexts:
-            contexts[league] = build_draw_context(
+            contexts[league] = runtime_modules.draw_predictor.build_draw_context(
                 completed,
                 cutoff_at,
                 category=league,
@@ -563,14 +563,15 @@ def predict_round_rows(
 
     parameters.validate()
     runtime = to_runtime_settings(parameters.model)
-    elo_result = generate_elo_ratings(
+    runtime_modules = ensure_version7b_model_call_path()
+    elo_result = runtime_modules.elo_rating.generate_elo_ratings(
         prepared_round.completed_matches,
         team_categories=prepared_round.team_categories,
         settings=runtime.elo,
         as_of=prepared_round.cutoff_at,
         team_name_normalizer=normalize_team_name,
     )
-    pipeline_module = ensure_version7b_model_pipeline()
+    pipeline_module = runtime_modules.model_pipeline
     options = pipeline_module.ModelOptions(True, True, True, True)
     # 各候補の評価開始時に、検査済みの現行関数を解決する。
     # Version7-Aの旧関数オブジェクトがmodule cacheへ残っていても使わない。
@@ -578,12 +579,12 @@ def predict_round_rows(
     rows = []
     for item in _target_matches(prepared_round, target_league):
         toto_match = item.toto_match
-        home_elo = get_team_elo(
+        home_elo = runtime_modules.elo_rating.get_team_elo(
             toto_match.home_team,
             elo_result,
             team_name_normalizer=normalize_team_name,
         )
-        away_elo = get_team_elo(
+        away_elo = runtime_modules.elo_rating.get_team_elo(
             toto_match.away_team,
             elo_result,
             team_name_normalizer=normalize_team_name,
@@ -610,7 +611,7 @@ def predict_round_rows(
             model_settings=runtime.model,
             elo_settings=runtime.elo,
         )
-        draw_prediction = predict_draw_aware(
+        draw_prediction = runtime_modules.draw_predictor.predict_draw_aware(
             {
                 "1": pipeline.version5_probabilities["home_win"],
                 "0": pipeline.version5_probabilities["draw"],

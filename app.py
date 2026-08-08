@@ -4,9 +4,13 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 
-# Streamlit再実行時の旧model_configを、他のプロジェクトmoduleより先に検査する。
+# Streamlit再実行時の旧モデル関数を、他のプロジェクトmoduleより先に検査する。
+from version7b_runtime import ensure_version7b_model_call_path
+
+ensure_version7b_model_call_path()
+
+# 設定側と旧predict_match公開入口も後方互換のため維持する。
 from version7b_config import ensure_version7b_model_config
-# 同様に旧model_pipelineのpredict_match signatureも先に検査する。
 from version7b_pipeline import ensure_version7b_model_pipeline
 
 ensure_version7b_model_config()

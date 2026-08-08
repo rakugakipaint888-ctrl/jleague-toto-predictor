@@ -127,8 +127,10 @@ def parameter_comparison_frame(result: OptimizationResult) -> pd.DataFrame:
         rows.append(
             {
                 "パラメータ": label,
-                "現在設定": before,
-                "候補設定": after,
+                # 数値と重み文字列が同じ列へ混在するとStreamlitのArrow変換で
+                # 警告になるため、表示列だけ文字列へ統一する。
+                "現在設定": str(before),
+                "候補設定": str(after),
                 "変更": "変更あり" if before != after else "変更なし",
             }
         )

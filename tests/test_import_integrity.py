@@ -15,6 +15,7 @@ import version7b_config
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 VERSION7B_MODULES = (
     "version7b_config",
+    "version7b_runtime",
     "version7b_pipeline",
     "walk_forward_validator",
     "model_evaluation",
