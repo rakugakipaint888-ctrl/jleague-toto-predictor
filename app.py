@@ -4,6 +4,8 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 
+# Streamlit再実行時の旧model_configを、他のプロジェクトmoduleより先に検査する。
+from version7b_config import ensure_version7b_model_config
 from analysis import render_analysis_tab
 from draw_analysis import render_draw_analysis_tab
 from draw_optimizer import load_active_draw_settings
@@ -55,6 +57,8 @@ from teams import (
     format_team_option,
     normalize_team_name,
 )
+
+ensure_version7b_model_config()
 
 
 # --------------------------------------------------

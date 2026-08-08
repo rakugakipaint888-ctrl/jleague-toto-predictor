@@ -8,12 +8,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Mapping, Optional, Sequence
 
-from draw_evaluation import DrawEvaluation, evaluate_draw_predictions
-from model_config import (
+from version7b_config import (
     VERSION7B_DEFAULT_EVALUATION_WEIGHTS,
     VERSION7B_DRAW_DEGRADATION_TOLERANCES,
     VERSION7B_OVERFIT_THRESHOLDS,
 )
+from draw_evaluation import DrawEvaluation, evaluate_draw_predictions
 
 EVALUATION_KEYS = (
     "brier_score",

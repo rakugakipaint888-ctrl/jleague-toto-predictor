@@ -7,6 +7,13 @@ from typing import Sequence
 
 import pandas as pd
 
+from version7b_config import (
+    VERSION7B_BOOTSTRAP_CHOICES,
+    VERSION7B_MODEL_LIMITS,
+    VERSION7B_RANDOM_SEED,
+    VERSION7B_TRIAL_COUNT_CHOICES,
+    VERSION7B_TRIAL_COUNT_DEFAULT,
+)
 from bootstrap_evaluation import bootstrap_top_models
 from data_loader import JAPAN_TIMEZONE, OfficialMatch
 from history_manager import TotoHistoryManager
@@ -19,13 +26,6 @@ from model_compare import (
     training_validation_frame,
     trial_metrics_frame,
     version7a_comparison_frame,
-)
-from model_config import (
-    VERSION7B_BOOTSTRAP_CHOICES,
-    VERSION7B_MODEL_LIMITS,
-    VERSION7B_RANDOM_SEED,
-    VERSION7B_TRIAL_COUNT_CHOICES,
-    VERSION7B_TRIAL_COUNT_DEFAULT,
 )
 from model_evaluation import EvaluationWeights
 from model_optimizer import (

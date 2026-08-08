@@ -16,6 +16,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
+from version7b_config import (
+    VERSION7B_DRAW_DEGRADATION_TOLERANCES,
+    VERSION7B_DRAW_GRID_SPACE,
+    VERSION7B_MODEL_GRID_SPACE,
+    VERSION7B_MODEL_SEARCH_SPACE,
+    VERSION7B_MODEL_VERSION,
+    VERSION7B_OVERFIT_THRESHOLDS,
+    VERSION7B_RANDOM_SEED,
+    VERSION7B_RANKING_LIMIT,
+)
 from backtest import (
     BacktestDataLeakError,
     BacktestError,
@@ -31,17 +41,7 @@ from draw_predictor import DrawContext, build_draw_context, predict_draw_aware
 from elo_rating import generate_elo_ratings, get_team_elo
 from history_manager import TotoHistoryManager, TotoMatch, TotoRound
 from metrics import DEFAULT_TOTO_STAKE_YEN, toto_payout_for_hits
-from model_config import (
-    VERSION7A_DRAW_SEARCH_SPACE,
-    VERSION7B_DRAW_DEGRADATION_TOLERANCES,
-    VERSION7B_DRAW_GRID_SPACE,
-    VERSION7B_MODEL_GRID_SPACE,
-    VERSION7B_MODEL_SEARCH_SPACE,
-    VERSION7B_MODEL_VERSION,
-    VERSION7B_OVERFIT_THRESHOLDS,
-    VERSION7B_RANDOM_SEED,
-    VERSION7B_RANKING_LIMIT,
-)
+from model_config import VERSION7A_DRAW_SEARCH_SPACE
 from model_evaluation import (
     DEFAULT_EVALUATION_WEIGHTS,
     CandidateEvaluation,

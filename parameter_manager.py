@@ -9,6 +9,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
+from version7b_config import (
+    VERSION7B_DEFAULT_MODEL_PARAMETERS,
+    VERSION7B_MODEL_VERSION,
+)
 from data_loader import JAPAN_TIMEZONE
 from draw_predictor import DEFAULT_DRAW_SETTINGS, DrawSettings
 from model_config import (
@@ -17,8 +21,6 @@ from model_config import (
     DEFAULT_MODEL_SETTINGS,
     DEFAULT_STANDINGS_SETTINGS,
     DEFAULT_VENUE_SETTINGS,
-    VERSION7B_DEFAULT_MODEL_PARAMETERS,
-    VERSION7B_MODEL_VERSION,
     EloSettings,
     FormSettings,
     ModelSettings,
