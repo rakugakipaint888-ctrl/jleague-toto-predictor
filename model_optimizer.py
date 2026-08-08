@@ -26,6 +26,7 @@ from version7b_config import (
     VERSION7B_RANDOM_SEED,
     VERSION7B_RANKING_LIMIT,
 )
+from version7b_pipeline import ensure_version7b_model_pipeline
 from backtest import (
     BacktestDataLeakError,
     BacktestError,
@@ -56,7 +57,6 @@ from model_evaluation import (
     comparison_rows,
     evaluate_candidate_rows,
 )
-from model_pipeline import ModelOptions, predict_match
 from parameter_manager import (
     ActiveVersion7BSettings,
     Version7BParameters,
@@ -570,7 +570,11 @@ def predict_round_rows(
         as_of=prepared_round.cutoff_at,
         team_name_normalizer=normalize_team_name,
     )
-    options = ModelOptions(True, True, True, True)
+    pipeline_module = ensure_version7b_model_pipeline()
+    options = pipeline_module.ModelOptions(True, True, True, True)
+    # 各候補の評価開始時に、検査済みの現行関数を解決する。
+    # Version7-Aの旧関数オブジェクトがmodule cacheへ残っていても使わない。
+    predict_function = pipeline_module.predict_match
     rows = []
     for item in _target_matches(prepared_round, target_league):
         toto_match = item.toto_match
@@ -596,7 +600,7 @@ def predict_round_rows(
             away_elo,
             is_home=False,
         )
-        pipeline = predict_match(
+        pipeline = predict_function(
             home_input,
             away_input,
             options=options,

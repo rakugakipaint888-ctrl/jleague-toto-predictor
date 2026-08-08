@@ -475,6 +475,53 @@ class Version7BSearchAndReportingTest(unittest.TestCase):
         )
         self.assertEqual(first.best_parameters, second.best_parameters)
 
+    def test_optuna_1_and_10_trials_complete_through_real_prediction_pipeline(
+        self,
+    ) -> None:
+        dataset = prepare_model_dataset(
+            (
+                _official_round(1400, 2023),
+                _official_round(1500, 2024),
+                _official_round(1600, 2025),
+            ),
+            _history(),
+            validation_method=SEASON_WALK_FORWARD,
+            target_league=ALL_LEAGUES,
+            requested_period="実予測パイプライン統合テスト",
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            one = run_model_optimization(
+                dataset,
+                SearchConfiguration(
+                    method=OPTUNA_SEARCH,
+                    trial_count=1,
+                    random_seed=7001,
+                ),
+                partial_path=root / "actual-optuna-1.csv",
+            )
+            ten = run_model_optimization(
+                dataset,
+                SearchConfiguration(
+                    method=OPTUNA_SEARCH,
+                    trial_count=10,
+                    random_seed=7010,
+                ),
+                partial_path=root / "actual-optuna-10.csv",
+            )
+            ranking_path = root / "actual-ranking.csv"
+            self.assertTrue(save_model_ranking(ten, path=ranking_path))
+            ranking_lines = ranking_path.read_text(encoding="utf-8-sig").splitlines()
+
+        self.assertEqual(len(one.all_trials), 1)
+        self.assertEqual(len(one.ranking), 1)
+        self.assertEqual(len(ten.all_trials), 10)
+        self.assertEqual(len(ten.ranking), 10)
+        self.assertEqual(len(ranking_lines), 11)
+        self.assertTrue(
+            all(record.final_validation is not None for record in ten.ranking)
+        )
+
     def test_random_grid_and_two_stage_search_complete(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

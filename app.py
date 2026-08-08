@@ -6,6 +6,12 @@ import streamlit as st
 
 # Streamlit再実行時の旧model_configを、他のプロジェクトmoduleより先に検査する。
 from version7b_config import ensure_version7b_model_config
+# 同様に旧model_pipelineのpredict_match signatureも先に検査する。
+from version7b_pipeline import ensure_version7b_model_pipeline
+
+ensure_version7b_model_config()
+ensure_version7b_model_pipeline()
+
 from analysis import render_analysis_tab
 from draw_analysis import render_draw_analysis_tab
 from draw_optimizer import load_active_draw_settings
@@ -57,9 +63,6 @@ from teams import (
     format_team_option,
     normalize_team_name,
 )
-
-ensure_version7b_model_config()
-
 
 # --------------------------------------------------
 # 基本設定
