@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from bet_evaluation import compare_bet_strategies
 from history_manager import JAPAN_TIMEZONE, TotoMatch, TotoPayouts, TotoRound
 from prediction_history import (
     HISTORY_COLUMNS,
@@ -156,6 +157,52 @@ class PredictionHistoryTest(unittest.TestCase):
 
         self.assertTrue((loaded["actual_result"].astype(str) == "1").all())
         self.assertTrue((loaded["total_hits"] == 13).all())
+
+    def test_reconcile_enables_saved_version7b_strategy_backtest(self) -> None:
+        frame = result_frame().assign(
+            prediction_version="Version7-B",
+            version7b_prediction="2",
+            version7b_home_win=20.0,
+            version7b_draw=25.0,
+            version7b_away_win=55.0,
+            home_expected_after_version7b=0.9,
+            away_expected_after_version7b=1.6,
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            manager = PredictionHistoryManager(
+                Path(temporary_directory) / "prediction_history.csv"
+            )
+            self.assertTrue(
+                manager.save_prediction_results(
+                    frame,
+                    round_with_results(complete=False),
+                )
+            )
+            before = manager.load()
+            self.assertEqual(
+                len(before.loc[before["prediction_version"] == "Version7-B"]),
+                13,
+            )
+            self.assertFalse(
+                before["actual_result"].isin(("1", "0", "2")).any()
+            )
+
+            self.assertTrue(manager.reconcile_actual_results(round_with_results()))
+            loaded = manager.load()
+
+        version7b = loaded.loc[loaded["prediction_version"] == "Version7-B"]
+        self.assertEqual(len(version7b), 13)
+        self.assertTrue(version7b["actual_result"].isin(("1", "0", "2")).all())
+        compared = compare_bet_strategies(
+            loaded,
+            target="toto",
+            prediction_version="Version7-B",
+            double_count=3,
+            triple_count=0,
+            draw_candidate_threshold=0.25,
+            draw_candidate_margin=0.05,
+        )
+        self.assertTrue(all(result.evaluated_rounds == 1 for result in compared))
 
     def test_completed_round_can_follow_an_incomplete_round_in_same_csv(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

@@ -612,10 +612,15 @@ toto結果一覧を取得します。選択した開催回について、対象1
 
 `data/history/prediction_history.csv`へ、1試合・1Versionを1行として保存します。
 同じ開催回・試合番号・Versionを再実行した場合は最新行へ置き換え、分析での
-二重計上を防ぎます。分析タブでは次を表示します。
+二重計上を防ぎます。確定済み開催回のバックテストでは、Version4～Version6に
+加えて、同じ開催初日`00:00 JST`以前のデータと現在採用中の引分設定で
+Version7-Aも13行保存します。同じ開催回に通常予想で保存済みのVersion7-Bがあれば、
+公式実結果を全13行へ照合します。Version7-Cは予測確率を作るVersionではないため、
+専用履歴行を増やさず、保存されたVersion7-AまたはVersion7-Bの確率を買い目戦略
+バックテストへ使用します。分析タブでは次を表示します。
 
 - 開催回一覧、13試合的中数、全体的中率、累積開催数、累積的中率
-- Version4・Version5・Version6の本命、勝率、期待得点、変更有無
+- Version4・Version5・Version6・Version7-Aの本命、勝率、期待得点
 - 1・0・2別正答率と推移
 - ホーム・引分・アウェイの予測割合と実結果割合
 - 開催回別的中数、累積的中率、Version比較のグラフ
@@ -919,7 +924,7 @@ Eloデータを取得できないため、Elo補正なしで計算しました�
 - `prediction_history.py`：開催回・Version別の予想履歴CSV
 - `backtest.py`：開催日時点のデータ再構成とVersion4～Version6再実行
 - `metrics.py`：的中率、Brier Score、Log Loss、Calibration、ROI
-- `analysis.py`：開催回集計、Version比較、分析タブ、グラフ
+- `analysis.py`：開催回集計、Version比較、Version7-A履歴生成、分析タブ、グラフ
 - `draw_predictor.py`：引分特徴量、3クラス正規化、引分補正・候補判定
 - `draw_evaluation.py`：引分専用指標、確率帯評価、複合Score
 - `draw_optimizer.py`：時系列分割、Optuna小規模探索、保存・採用・復元

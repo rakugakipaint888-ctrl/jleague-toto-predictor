@@ -194,7 +194,9 @@ class Version7CStreamlitTest(unittest.TestCase):
         self.assertEqual(len(app.exception), 0)
         self.assertEqual(len(app.error), 0)
 
-    def test_saved_probabilities_render_three_strategy_backtest(self) -> None:
+    def test_version7a_saved_probabilities_render_three_strategy_backtest(
+        self,
+    ) -> None:
         self.history_frame = completed_history()
         app = self._predicted_app()
         next(
@@ -208,8 +210,18 @@ class Version7CStreamlitTest(unittest.TestCase):
 
         results = app.session_state["version7c_backtest_results"]
         self.assertEqual(len(results), 3)
+        self.assertTrue(
+            all(result.prediction_version == "Version7-A" for result in results)
+        )
         self.assertTrue(all(result.evaluated_rounds == 2 for result in results))
         self.assertTrue(all(not result.payout_data_available for result in results))
+        self.assertFalse(
+            any(
+                warning.value
+                == "実結果まで揃った対象開催回を確認できませんでした。"
+                for warning in app.warning
+            )
+        )
         self.assertEqual(len(app.exception), 0)
         self.assertEqual(len(app.error), 0)
 

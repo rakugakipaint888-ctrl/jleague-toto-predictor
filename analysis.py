@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Optional, Sequence
 
 import pandas as pd
@@ -13,10 +14,14 @@ from backtest import (
     fetch_historical_matches,
     run_backtest,
 )
+from draw_optimizer import load_active_draw_settings, prepare_draw_round
+from draw_predictor import DrawSettings, predict_draw_aware
 from history_manager import TotoHistoryManager, TotoPayouts, TotoRoundSummary
 from metrics import TOTO_OUTCOMES, aggregate_roi, evaluate_model
+from model_config import VERSION7A_MODEL_VERSION
 from prediction_history import (
     HISTORY_COLUMNS,
+    PredictionHistoryRecord,
     PredictionHistoryManager,
     history_csv_bytes,
 )
@@ -32,6 +37,53 @@ class AnalysisTables:
     class_accuracy_trend: pd.DataFrame
     prediction_share_trend: pd.DataFrame
     calibration: pd.DataFrame
+
+
+def version7a_history_records(
+    toto_round,
+    historical_matches: Sequence,
+    *,
+    settings: DrawSettings,
+    generated_at: datetime,
+) -> list[PredictionHistoryRecord]:
+    """過去開催日時点のVersion7-Aを履歴CSV用13行へ変換する。"""
+
+    prepared = prepare_draw_round(toto_round, historical_matches)
+    matches_by_number = {
+        match.match_number: match for match in prepared.toto_round.matches
+    }
+    generated_text = generated_at.isoformat()
+    records = []
+    for row in prepared.rows:
+        prediction = predict_draw_aware(
+            row.base_probabilities,
+            row.home_expected_goals,
+            row.away_expected_goals,
+            row.home_input,
+            row.away_input,
+            context=row.context,
+            settings=settings,
+        )
+        toto_match = matches_by_number[row.match_number]
+        records.append(
+            PredictionHistoryRecord(
+                toto_round=row.round_id,
+                toto_match_number=row.match_number,
+                prediction_version=VERSION7A_MODEL_VERSION,
+                prediction_date=generated_text,
+                home_team=toto_match.home_team,
+                away_team=toto_match.away_team,
+                prediction=prediction.prediction,
+                probability_1=float(prediction.probabilities["1"]),
+                probability_0=float(prediction.probabilities["0"]),
+                probability_2=float(prediction.probabilities["2"]),
+                home_expected_goals=float(row.home_expected_goals),
+                away_expected_goals=float(row.away_expected_goals),
+                actual_result=row.actual_result,
+                hit=prediction.prediction == row.actual_result,
+            )
+        )
+    return records
 
 
 def _probability_rows(group: pd.DataFrame) -> list[dict[str, float]]:
@@ -447,7 +499,7 @@ def render_analysis_tab(
     st.header("分析")
     st.caption(
         "toto公式開催回を指定し、開催初日0:00より前のデータだけで"
-        "Version4～Version6を比較します。"
+        "Version4～Version7-Aを比較します。"
     )
 
     if "toto_round_catalog" not in st.session_state:
@@ -528,13 +580,29 @@ def render_analysis_tab(
                     round_result.toto_round,
                     official_history,
                 )
+                history_records = [
+                    *backtest_result.history_records(),
+                    *version7a_history_records(
+                        round_result.toto_round,
+                        official_history,
+                        settings=load_active_draw_settings(),
+                        generated_at=backtest_result.generated_at,
+                    ),
+                ]
                 history_saved = prediction_history_manager.save_records(
-                    backtest_result.history_records(),
+                    history_records,
                     payouts_by_round={
                         round_result.toto_round.round_id:
                             round_result.toto_round.payouts
                     },
                 )
+                if history_saved:
+                    # 同じ開催回を通常予想で保存済みなら、Version7-Bを含む
+                    # 全Versionへ公式実結果を付与する。Version7-Cは予測Versionを
+                    # 増やさず、ここで保存した確率を買い目評価へ利用する。
+                    prediction_history_manager.reconcile_actual_results(
+                        round_result.toto_round
+                    )
                 st.session_state["latest_backtest_result"] = backtest_result
                 if history_saved:
                     st.success(

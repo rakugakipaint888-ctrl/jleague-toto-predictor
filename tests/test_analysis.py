@@ -1,10 +1,17 @@
 """開催回分析・Version比較・累積推移を確認する。"""
 
+import tempfile
 import unittest
+from pathlib import Path
 
 import pandas as pd
 
-from analysis import build_analysis_tables
+from analysis import build_analysis_tables, version7a_history_records
+from backtest import run_backtest
+from bet_evaluation import compare_bet_strategies
+from draw_predictor import DEFAULT_DRAW_SETTINGS
+from prediction_history import PredictionHistoryManager
+from tests.test_backtest import completed_round, historical_matches
 
 
 def history_frame() -> pd.DataFrame:
@@ -50,6 +57,68 @@ class AnalysisTest(unittest.TestCase):
         self.assertFalse(tables.class_accuracy_trend.empty)
         self.assertFalse(tables.prediction_share_trend.empty)
         self.assertFalse(tables.calibration.empty)
+
+    def test_same_completed_round_supports_version6_and_version7a_strategy_backtest(
+        self,
+    ) -> None:
+        toto_round = completed_round()
+        source_matches = historical_matches()
+        backtest_result = run_backtest(toto_round, source_matches)
+        version7a_records = version7a_history_records(
+            toto_round,
+            source_matches,
+            settings=DEFAULT_DRAW_SETTINGS,
+            generated_at=backtest_result.generated_at,
+        )
+        all_records = [
+            *backtest_result.history_records(),
+            *version7a_records,
+        ]
+
+        self.assertEqual(len(version7a_records), 13)
+        self.assertEqual(
+            {record.toto_match_number for record in version7a_records},
+            set(range(1, 14)),
+        )
+        self.assertTrue(
+            all(
+                record.actual_result in ("1", "0", "2")
+                for record in version7a_records
+            )
+        )
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            manager = PredictionHistoryManager(
+                Path(temporary_directory) / "prediction_history.csv"
+            )
+            self.assertTrue(
+                manager.save_records(
+                    all_records,
+                    payouts_by_round={toto_round.round_id: toto_round.payouts},
+                )
+            )
+            self.assertTrue(manager.reconcile_actual_results(toto_round))
+            saved = manager.load()
+
+        version_counts = saved.groupby("prediction_version").size().to_dict()
+        self.assertEqual(version_counts["Version6"], 13)
+        self.assertEqual(version_counts["Version7-A"], 13)
+        for version in ("Version6", "Version7-A"):
+            compared = compare_bet_strategies(
+                saved,
+                target="toto",
+                prediction_version=version,
+                double_count=3,
+                triple_count=0,
+                draw_candidate_threshold=0.25,
+                draw_candidate_margin=0.05,
+            )
+            self.assertTrue(
+                all(result.evaluated_rounds == 1 for result in compared)
+            )
+            self.assertTrue(
+                all(result.evaluated_round_ids == (1548,) for result in compared)
+            )
 
 
 if __name__ == "__main__":
