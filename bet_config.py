@@ -67,6 +67,18 @@ SINGLE_CONFIDENCE_WEIGHTS = {
     "draw_safety": 0.10,
 }
 
+# 0が確率3位のダブルだけで、「通常の2位を残す」案と「0へ入れ替える」案を
+# 比較する。coverage_retentionは入替時に失うモデル確率を直接評価し、
+# model_draw_evidenceはVersion7-A／7-Bの候補フラグと既存draw_signalを再利用する。
+DRAW_INCLUSION_SCORE_WEIGHTS = {
+    "draw_probability": 0.20,
+    "threshold_excess": 0.15,
+    "coverage_retention": 0.25,
+    "top_closeness": 0.15,
+    "entropy": 0.15,
+    "model_draw_evidence": 0.10,
+}
+
 # 確率差を0～1特徴量へ変換する尺度。結果に合わせた自動調整は行わない。
 TOP_TWO_MARGIN_SCALE = 0.50
 TOP_THREE_MARGIN_SCALE = 2.0 / 3.0
@@ -74,6 +86,15 @@ SINGLE_MARGIN_SCALE = 0.35
 DRAW_CLOSENESS_SCALE = 0.25
 SECOND_PROBABILITY_SCALE = 0.50
 THIRD_PROBABILITY_SCALE = 1.0 / 3.0
+
+# Draw Inclusion Scoreの0～1特徴量化に使う固定尺度。特定開催回へ合わせて
+# 自動調整せず、10ポイントのCoverage低下を入替上限として保守的に扱う。
+DRAW_INCLUSION_PROBABILITY_SCALE = 1.0 / 3.0
+DRAW_INCLUSION_THRESHOLD_EXCESS_SCALE = 0.10
+DRAW_INCLUSION_COVERAGE_LOSS_SCALE = 0.10
+DRAW_INCLUSION_TOP_GAP_SCALE = 0.25
+DRAW_INCLUSION_MIN_SCORE = 60.0
+DRAW_INCLUSION_MAX_COVERAGE_LOSS = 0.10
 
 SINGLE_CONFIDENCE_HIGH = 60.0
 SINGLE_CONFIDENCE_MEDIUM = 35.0

@@ -562,8 +562,9 @@ def _draw_threshold_input(target: str, default: float) -> float:
         ),
         key=f"version7c_draw_threshold_choice_{target}",
         help=(
-            "閾値超過だけで0を強制せず、候補Scoreとシングル信頼度の"
-            "補助情報として使います。"
+            "P(0)が閾値未満なら通常の確率上位2結果を使います。閾値以上でも"
+            "0を強制せず、0が確率3位の場合だけDraw Inclusion Scoreで"
+            "通常2位との入替価値を比較します。"
         ),
     )
     if choice != "任意指定":
@@ -620,10 +621,13 @@ def _display_plan_frame(plan: BetPlan) -> pd.DataFrame:
         "確率差",
         "引分候補",
         "不確実性Score",
+        "Draw Inclusion Score",
+        "Draw Inclusion判定",
         "シングル信頼度",
         "推奨区分",
         "推奨買い目",
         "Coverage",
+        "判定理由",
     ]
     return frame[columns].round(
         {
@@ -697,6 +701,8 @@ def _request_signature(
             "1",
             "0",
             "2",
+            "draw_candidate",
+            "draw_candidate_reasons",
             "prediction_version",
         )
         if column in frame.columns

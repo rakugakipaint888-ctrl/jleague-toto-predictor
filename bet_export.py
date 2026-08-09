@@ -38,6 +38,23 @@ def bet_plan_frame(plan: BetPlan) -> pd.DataFrame:
                 "不確実性Score": analysis.uncertainty_score,
                 "ダブル候補Score": analysis.double_candidate_score,
                 "トリプル候補Score": analysis.triple_candidate_score,
+                "Draw Inclusion Score": (
+                    f"{analysis.draw_inclusion_score:.1f}"
+                    if analysis.draw_inclusion_score is not None
+                    else "—"
+                ),
+                "Draw Inclusion判定": (
+                    "0採用候補"
+                    if analysis.draw_inclusion_recommended
+                    else (
+                        "上位2維持"
+                        if analysis.draw_inclusion_evaluated
+                        else "対象外"
+                    )
+                ),
+                "0入替Coverage低下": (
+                    analysis.draw_inclusion_coverage_loss * 100.0
+                ),
                 "シングル信頼度": analysis.single_confidence,
                 "シングル信頼度Score": analysis.single_confidence_score,
                 "推奨区分": BET_TYPE_LABELS[recommendation.bet_type],

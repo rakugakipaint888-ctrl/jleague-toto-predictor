@@ -9,6 +9,7 @@ import pandas as pd
 
 from bet_config import (
     DOUBLE_SCORE_WEIGHTS,
+    DRAW_INCLUSION_SCORE_WEIGHTS,
     SINGLE_CONFIDENCE_WEIGHTS,
     TRIPLE_SCORE_WEIGHTS,
     UNCERTAINTY_SCORE_WEIGHTS,
@@ -29,12 +30,15 @@ from bet_optimizer import (
     BET_TYPE_SINGLE,
     BET_TYPE_TRIPLE,
     BetOptimizationError,
+    MatchPrediction,
+    analyze_match_prediction,
     apply_manual_selections,
     build_match_predictions,
     calculate_purchase_amount,
     calculate_ticket_count,
     is_budget_exceeded,
     optimize_bet_plan,
+    select_double_outcomes,
 )
 
 
@@ -92,6 +96,7 @@ class Version7CCountAndOptimizationTest(unittest.TestCase):
             DOUBLE_SCORE_WEIGHTS,
             TRIPLE_SCORE_WEIGHTS,
             SINGLE_CONFIDENCE_WEIGHTS,
+            DRAW_INCLUSION_SCORE_WEIGHTS,
         ):
             self.assertAlmostEqual(sum(weights.values()), 1.0)
 
@@ -149,7 +154,7 @@ class Version7CCountAndOptimizationTest(unittest.TestCase):
             if recommendation.bet_type == BET_TYPE_DOUBLE:
                 self.assertEqual(
                     recommendation.outcomes,
-                    recommendation.analysis.ranked_outcomes[:2],
+                    select_double_outcomes(recommendation.analysis),
                 )
             elif recommendation.bet_type == BET_TYPE_TRIPLE:
                 self.assertEqual(recommendation.outcomes, ("1", "0", "2"))
@@ -187,6 +192,166 @@ class Version7CCountAndOptimizationTest(unittest.TestCase):
         self.assertTrue(by_source[2].analysis.draw_candidate)
         self.assertFalse(by_source[4].analysis.draw_candidate)
 
+
+class Version7CDrawInclusionTest(unittest.TestCase):
+    @staticmethod
+    def _prediction(
+        probability_1: float,
+        probability_0: float,
+        probability_2: float,
+        *,
+        model_draw_candidate: bool = False,
+        match_number: int = 1,
+    ) -> MatchPrediction:
+        return MatchPrediction(
+            match_number=match_number,
+            source_match_number=match_number,
+            home_team=f"H{match_number}",
+            away_team=f"A{match_number}",
+            probability_1=probability_1,
+            probability_0=probability_0,
+            probability_2=probability_2,
+            model_draw_candidate=model_draw_candidate,
+            model_draw_candidate_reasons=(
+                ("引分確率が設定閾値以上",)
+                if model_draw_candidate
+                else ()
+            ),
+        )
+
+    @staticmethod
+    def _analysis(prediction: MatchPrediction):
+        return analyze_match_prediction(
+            prediction,
+            draw_candidate_threshold=0.25,
+            draw_candidate_margin=0.05,
+        )
+
+    def _all_double_plan(self, first: MatchPrediction):
+        fillers = tuple(
+            self._prediction(0.70, 0.18, 0.12, match_number=number)
+            for number in range(2, 6)
+        )
+        return optimize_bet_plan(
+            (first, *fillers),
+            target="mini_a",
+            double_count=5,
+            triple_count=0,
+            draw_candidate_threshold=0.25,
+            draw_candidate_margin=0.05,
+        )
+
+    def test_case_1_compares_third_draw_and_can_use_model_draw_evidence(self) -> None:
+        without_model_signal = self._analysis(
+            self._prediction(0.40, 0.27, 0.33)
+        )
+        with_model_signal = self._analysis(
+            self._prediction(
+                0.40,
+                0.27,
+                0.33,
+                model_draw_candidate=True,
+            )
+        )
+        self.assertTrue(without_model_signal.draw_inclusion_evaluated)
+        self.assertIsNotNone(without_model_signal.draw_inclusion_score)
+        self.assertGreater(
+            with_model_signal.draw_inclusion_score or 0.0,
+            without_model_signal.draw_inclusion_score or 0.0,
+        )
+        self.assertEqual(select_double_outcomes(without_model_signal), ("1", "2"))
+        self.assertEqual(select_double_outcomes(with_model_signal), ("1", "0"))
+
+    def test_case_2_evaluates_draw_but_keeps_top_two_when_evidence_is_weak(self) -> None:
+        analysis = self._analysis(self._prediction(0.30, 0.26, 0.44))
+        self.assertTrue(analysis.draw_inclusion_evaluated)
+        self.assertFalse(analysis.draw_inclusion_recommended)
+        self.assertEqual(select_double_outcomes(analysis), ("2", "1"))
+
+    def test_case_3_uses_draw_when_it_is_already_in_top_two(self) -> None:
+        analysis = self._analysis(self._prediction(0.45, 0.35, 0.20))
+        self.assertEqual(analysis.ranked_outcomes[:2], ("1", "0"))
+        self.assertFalse(analysis.draw_inclusion_evaluated)
+        self.assertEqual(select_double_outcomes(analysis), ("1", "0"))
+
+    def test_case_4_is_not_a_draw_candidate_or_special_inclusion(self) -> None:
+        analysis = self._analysis(self._prediction(0.70, 0.18, 0.12))
+        self.assertFalse(analysis.draw_candidate)
+        self.assertFalse(analysis.draw_inclusion_evaluated)
+        self.assertIsNone(analysis.draw_inclusion_score)
+        # 0は通常の確率2位なので、特別採用ではなく基本上位2として残る。
+        self.assertEqual(select_double_outcomes(analysis), ("1", "0"))
+
+    def test_case_5_balanced_distribution_is_high_uncertainty_candidate(self) -> None:
+        balanced = self._analysis(self._prediction(0.35, 0.33, 0.32))
+        confident = self._analysis(self._prediction(0.70, 0.18, 0.12))
+        self.assertGreater(balanced.uncertainty_score, confident.uncertainty_score)
+        self.assertGreater(
+            balanced.double_candidate_score,
+            confident.double_candidate_score,
+        )
+        self.assertGreater(
+            balanced.triple_candidate_score,
+            confident.triple_candidate_score,
+        )
+
+    def test_case_6_below_threshold_does_not_enter_draw_comparison(self) -> None:
+        analysis = self._analysis(
+            self._prediction(
+                0.45,
+                0.249,
+                0.301,
+                model_draw_candidate=True,
+            )
+        )
+        self.assertFalse(analysis.draw_inclusion_evaluated)
+        self.assertIsNone(analysis.draw_inclusion_score)
+        self.assertEqual(select_double_outcomes(analysis), ("1", "2"))
+
+    def test_case_7_exact_threshold_enters_draw_comparison(self) -> None:
+        analysis = self._analysis(self._prediction(0.45, 0.25, 0.30))
+        self.assertTrue(analysis.draw_candidate)
+        self.assertTrue(analysis.draw_inclusion_evaluated)
+        self.assertIsNotNone(analysis.draw_inclusion_score)
+        self.assertEqual(select_double_outcomes(analysis), ("1", "2"))
+
+    def test_selected_and_rejected_draws_both_have_auditable_reasons(self) -> None:
+        selected_plan = self._all_double_plan(
+            self._prediction(
+                0.40,
+                0.27,
+                0.33,
+                model_draw_candidate=True,
+            )
+        )
+        selected = selected_plan.recommendations[0]
+        self.assertEqual(selected.outcomes, ("1", "0"))
+        self.assertAlmostEqual(selected.coverage, 0.67)
+        self.assertIn("0を採用", selected.reason)
+        self.assertIn("Coverage低下6.0pt", selected.reason)
+
+        rejected_plan = self._all_double_plan(
+            self._prediction(0.30, 0.26, 0.44)
+        )
+        rejected = rejected_plan.recommendations[0]
+        self.assertEqual(rejected.outcomes, ("2", "1"))
+        self.assertAlmostEqual(rejected.coverage, 0.74)
+        self.assertIn("引分評価対象", rejected.reason)
+        self.assertIn("上位2結果2・1を維持", rejected.reason)
+
+    def test_existing_model_draw_reasons_are_passed_to_version7c(self) -> None:
+        frame = probability_frame()
+        frame.loc[0, "draw_candidate_reasons"] = (
+            "引分確率が設定閾値以上／1位確率との差が設定範囲内"
+        )
+        prediction = build_match_predictions(frame, "mini_a")[0]
+        self.assertEqual(
+            prediction.model_draw_candidate_reasons,
+            ("引分確率が設定閾値以上", "1位確率との差が設定範囲内"),
+        )
+
+
+class Version7CInputValidationTest(unittest.TestCase):
     def test_probability_errors_are_rejected_without_nan_or_infinity(self) -> None:
         for invalid in (float("nan"), float("inf")):
             frame = probability_frame()

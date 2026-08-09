@@ -1,7 +1,7 @@
 """Version7-Cの確率ベース買い目最適化。
 
-Version7-A／Version7-Bが出力したP(1)・P(0)・P(2)だけを入力に使い、
-予測モデルや確率そのものは変更しない。
+Version7-A／Version7-Bが出力したP(1)・P(0)・P(2)と既存引分候補情報だけを
+入力に使い、予測モデルや確率そのものは変更しない。
 """
 
 from __future__ import annotations
@@ -19,6 +19,13 @@ from bet_config import (
     DEFAULT_DRAW_CANDIDATE_MARGIN,
     DEFAULT_DRAW_CANDIDATE_THRESHOLD,
     DOUBLE_SCORE_WEIGHTS,
+    DRAW_INCLUSION_COVERAGE_LOSS_SCALE,
+    DRAW_INCLUSION_MAX_COVERAGE_LOSS,
+    DRAW_INCLUSION_MIN_SCORE,
+    DRAW_INCLUSION_PROBABILITY_SCALE,
+    DRAW_INCLUSION_SCORE_WEIGHTS,
+    DRAW_INCLUSION_THRESHOLD_EXCESS_SCALE,
+    DRAW_INCLUSION_TOP_GAP_SCALE,
     DRAW_CLOSENESS_SCALE,
     DRAW_SIGNAL_CLOSENESS_WEIGHT,
     DRAW_SIGNAL_THRESHOLD_WEIGHT,
@@ -72,6 +79,7 @@ class MatchPrediction:
     probability_0: float
     probability_2: float
     model_draw_candidate: bool = False
+    model_draw_candidate_reasons: tuple[str, ...] = ()
 
     @property
     def probabilities(self) -> dict[str, float]:
@@ -96,6 +104,11 @@ class MatchBetAnalysis:
     normalized_entropy: float
     draw_candidate: bool
     draw_signal: float
+    draw_candidate_threshold: float
+    draw_inclusion_evaluated: bool
+    draw_inclusion_score: float | None
+    draw_inclusion_coverage_loss: float
+    draw_inclusion_recommended: bool
     uncertainty_score: float
     double_candidate_score: float
     triple_candidate_score: float
@@ -252,6 +265,9 @@ def build_match_predictions(
                 probability_0=probabilities["0"],
                 probability_2=probabilities["2"],
                 model_draw_candidate=_as_boolean(row.get("draw_candidate", False)),
+                model_draw_candidate_reasons=_as_reason_tuple(
+                    row.get("draw_candidate_reasons", ())
+                ),
             )
         )
     return tuple(predictions)
@@ -346,6 +362,58 @@ def analyze_match_prediction(
     #   + 0.10×引分Signal + 0.05×3位確率品質)
     triple_score = 100.0 * _weighted_score(TRIPLE_SCORE_WEIGHTS, features)
 
+    # 0が確率3位のときだけ、通常2位との入替を独立評価する。ここで使う
+    # coverage_loss = P(通常2位) - P(0) は、1・2から1・0等へ変えることで
+    # 失う試合別Coverageそのものであり、Version7-A／7-Bの確率は変更しない。
+    draw_probability = probabilities["0"]
+    draw_is_third = third == "0"
+    draw_inclusion_evaluated = bool(
+        draw_is_third and draw_probability >= threshold
+    )
+    draw_inclusion_coverage_loss = (
+        max(0.0, second_probability - draw_probability)
+        if draw_is_third
+        else 0.0
+    )
+    draw_inclusion_score: float | None = None
+    draw_inclusion_recommended = False
+    if draw_inclusion_evaluated:
+        draw_inclusion_features = {
+            "draw_probability": _clamp(
+                draw_probability / DRAW_INCLUSION_PROBABILITY_SCALE
+            ),
+            "threshold_excess": _clamp(
+                (draw_probability - threshold)
+                / DRAW_INCLUSION_THRESHOLD_EXCESS_SCALE
+            ),
+            "coverage_retention": 1.0
+            - _clamp(
+                draw_inclusion_coverage_loss
+                / DRAW_INCLUSION_COVERAGE_LOSS_SCALE
+            ),
+            "top_closeness": 1.0
+            - _clamp(
+                (top_probability - draw_probability)
+                / DRAW_INCLUSION_TOP_GAP_SCALE
+            ),
+            "entropy": entropy,
+            # 既存モデル候補なら最大の補助根拠とし、それ以外でも現在の
+            # P(0)と1位との差から作った連続draw_signalを0にはしない。
+            "model_draw_evidence": max(
+                draw_signal,
+                1.0 if prediction.model_draw_candidate else 0.0,
+            ),
+        }
+        draw_inclusion_score = 100.0 * _weighted_score(
+            DRAW_INCLUSION_SCORE_WEIGHTS,
+            draw_inclusion_features,
+        )
+        draw_inclusion_recommended = bool(
+            draw_inclusion_score >= DRAW_INCLUSION_MIN_SCORE
+            and draw_inclusion_coverage_loss
+            < DRAW_INCLUSION_MAX_COVERAGE_LOSS
+        )
+
     confidence_features = {
         "maximum_certainty": _clamp(
             (top_probability - 1.0 / 3.0) / (2.0 / 3.0)
@@ -379,6 +447,11 @@ def analyze_match_prediction(
         normalized_entropy=entropy,
         draw_candidate=draw_candidate,
         draw_signal=draw_signal,
+        draw_candidate_threshold=threshold,
+        draw_inclusion_evaluated=draw_inclusion_evaluated,
+        draw_inclusion_score=draw_inclusion_score,
+        draw_inclusion_coverage_loss=draw_inclusion_coverage_loss,
+        draw_inclusion_recommended=draw_inclusion_recommended,
         uncertainty_score=uncertainty_score,
         double_candidate_score=double_score,
         triple_candidate_score=triple_score,
@@ -568,11 +641,8 @@ def _recommendation(
             f"上位差{analysis.top_two_gap:.1%}"
         )
     elif bet_type == BET_TYPE_DOUBLE:
-        outcomes = analysis.ranked_outcomes[:2]
-        reason = (
-            f"ダブル候補Score {analysis.double_candidate_score:.1f}、"
-            f"上位差{analysis.top_two_gap:.1%}"
-        )
+        outcomes = select_double_outcomes(analysis)
+        reason = _double_selection_reason(analysis, outcomes)
     elif bet_type == BET_TYPE_TRIPLE:
         outcomes = TOTO_OUTCOMES
         reason = (
@@ -586,6 +656,90 @@ def _recommendation(
         bet_type=bet_type,
         outcomes=tuple(outcomes),
         reason=reason,
+    )
+
+
+def select_double_outcomes(
+    analysis: MatchBetAnalysis,
+) -> tuple[str, str]:
+    """ダブル対象試合の2結果だけを選ぶ（試合配置ロジックとは独立）。
+
+    通常は確率上位2結果を維持する。0が3位でもP(0)が引分候補閾値以上で、
+    Draw Inclusion Scoreが採用基準を満たし、Coverage低下が10ポイント未満なら、
+    通常2位を0へ入れ替える。閾値超過だけでは0を採用しない。
+    """
+
+    standard = analysis.ranked_outcomes[:2]
+    if "0" in standard or not analysis.draw_inclusion_recommended:
+        return standard
+    return (analysis.top_outcome, "0")
+
+
+def _double_selection_reason(
+    analysis: MatchBetAnalysis,
+    outcomes: tuple[str, str],
+) -> str:
+    probabilities = analysis.prediction.probabilities
+    draw_probability = probabilities["0"]
+    standard = analysis.ranked_outcomes[:2]
+    base = f"ダブル候補Score {analysis.double_candidate_score:.1f}。"
+    if "0" in standard:
+        return (
+            base
+            + f"P(0)={draw_probability:.1%}が確率上位2結果に入るため、"
+            f"通常順位どおり{'・'.join(outcomes)}を採用"
+        )
+    second_outcome = analysis.second_outcome
+    second_probability = probabilities[second_outcome]
+    gap_points = analysis.draw_inclusion_coverage_loss * 100.0
+    threshold = analysis.draw_candidate_threshold
+    if not analysis.draw_inclusion_evaluated:
+        return (
+            base
+            + f"P(0)={draw_probability:.1%}が引分候補閾値"
+            f"{threshold:.1%}未満のため、確率上位2結果"
+            f"{'・'.join(standard)}を維持"
+        )
+
+    score = float(analysis.draw_inclusion_score or 0.0)
+    if analysis.prediction.model_draw_candidate:
+        reason_detail = "／".join(
+            analysis.prediction.model_draw_candidate_reasons
+        )
+        model_reason = (
+            f"Version7-A／7-B引分候補（{reason_detail}）も成立。"
+            if reason_detail
+            else "Version7-A／7-B引分候補も成立。"
+        )
+    else:
+        model_reason = ""
+    if outcomes != standard:
+        return (
+            base
+            + f"P(0)={draw_probability:.1%}、通常2位{second_outcome}="
+            f"{second_probability:.1%}との差{gap_points:.1f}pt。"
+            + model_reason
+            + f"閾値{threshold:.1%}以上かつDraw Inclusion Score "
+            f"{score:.1f}点のため0を採用（Coverage低下{gap_points:.1f}pt）"
+        )
+
+    if analysis.draw_inclusion_coverage_loss >= DRAW_INCLUSION_MAX_COVERAGE_LOSS:
+        conclusion = (
+            f"Coverage低下{gap_points:.1f}ptが上限"
+            f"{DRAW_INCLUSION_MAX_COVERAGE_LOSS * 100.0:.1f}pt以上"
+        )
+    else:
+        conclusion = (
+            f"Draw Inclusion Score {score:.1f}点が採用基準"
+            f"{DRAW_INCLUSION_MIN_SCORE:.1f}点未満"
+        )
+    return (
+        base
+        + f"引分評価対象だが、P(0)={draw_probability:.1%}は通常2位"
+        f"{second_outcome}={second_probability:.1%}より{gap_points:.1f}pt低く、"
+        + model_reason
+        + conclusion
+        + f"のため確率上位2結果{'・'.join(standard)}を維持"
     )
 
 
@@ -730,3 +884,24 @@ def _as_boolean(value: Any) -> bool:
     except (TypeError, ValueError):
         pass
     return bool(value)
+
+
+def _as_reason_tuple(value: Any) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    try:
+        if pd.isna(value):
+            return ()
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, str):
+        normalized = value.replace("／", "|")
+        return tuple(
+            reason.strip()
+            for reason in normalized.split("|")
+            if reason.strip()
+        )
+    if isinstance(value, Sequence):
+        return tuple(str(reason).strip() for reason in value if str(reason).strip())
+    text = str(value).strip()
+    return (text,) if text else ()
