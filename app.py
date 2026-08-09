@@ -1,3 +1,5 @@
+import importlib
+import inspect
 from dataclasses import replace
 from datetime import datetime
 
@@ -16,8 +18,8 @@ from version7b_pipeline import ensure_version7b_model_pipeline
 ensure_version7b_model_config()
 ensure_version7b_model_pipeline()
 
-from analysis import render_analysis_tab
-from bet_optimization_ui import render_bet_optimization_tab
+import analysis as _analysis
+import bet_optimization_ui as _bet_optimization_ui
 from draw_analysis import render_draw_analysis_tab
 from draw_optimizer import load_active_draw_settings
 from draw_predictor import (
@@ -68,6 +70,84 @@ from teams import (
     format_team_option,
     normalize_team_name,
 )
+
+
+BET_OPTIMIZATION_TAB_KEYWORDS = (
+    "prediction_history_manager",
+    "history_manager",
+    "active_draw_settings",
+    "fallback_matches",
+)
+BET_OPTIMIZATION_ANALYSIS_EXPORTS = (
+    "Version7AHistoryGenerationResult",
+    "ensure_version7a_strategy_history",
+    "reconcile_saved_version7b_strategy_history",
+    "render_analysis_tab",
+)
+
+
+def _has_current_bet_optimization_tab_signature(renderer) -> bool:
+    """Version7-Cタブの呼び出し契約が現行4引数と一致するか確認する。"""
+
+    if not callable(renderer):
+        return False
+    try:
+        signature = inspect.signature(renderer)
+    except (TypeError, ValueError):
+        return False
+    if tuple(signature.parameters) != BET_OPTIMIZATION_TAB_KEYWORDS:
+        return False
+    parameters = tuple(signature.parameters.values())
+    if any(
+        parameter.kind is not inspect.Parameter.KEYWORD_ONLY
+        for parameter in parameters
+    ):
+        return False
+    if any(
+        parameter.default is not inspect.Parameter.empty
+        for parameter in parameters[:3]
+    ):
+        return False
+    return parameters[3].default == ()
+
+
+def _load_bet_optimization_tab_renderer():
+    """Streamlit hot rerunに残った旧3引数関数だけを再読込する。"""
+
+    renderer = getattr(
+        _bet_optimization_ui,
+        "render_bet_optimization_tab",
+        None,
+    )
+    if not _has_current_bet_optimization_tab_signature(renderer):
+        importlib.invalidate_caches()
+        if not all(
+            hasattr(_analysis, export_name)
+            for export_name in BET_OPTIMIZATION_ANALYSIS_EXPORTS
+        ):
+            importlib.reload(_analysis)
+        reloaded_module = importlib.reload(_bet_optimization_ui)
+        renderer = getattr(
+            reloaded_module,
+            "render_bet_optimization_tab",
+            None,
+        )
+    if not _has_current_bet_optimization_tab_signature(renderer):
+        actual_signature = (
+            str(inspect.signature(renderer))
+            if callable(renderer)
+            else "not callable"
+        )
+        raise RuntimeError(
+            "render_bet_optimization_tabの引数が現行契約と一致しません: "
+            f"{actual_signature}"
+        )
+    return renderer
+
+
+render_bet_optimization_tab = _load_bet_optimization_tab_renderer()
+render_analysis_tab = _analysis.render_analysis_tab
+
 
 # --------------------------------------------------
 # 基本設定

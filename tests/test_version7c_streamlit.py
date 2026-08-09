@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ast
+import inspect
 import os
 import tempfile
 import unittest
@@ -12,6 +14,7 @@ import pandas as pd
 import streamlit as st
 from streamlit.testing.v1 import AppTest
 
+import bet_optimization_ui
 from analysis import Version7AHistoryGenerationResult
 from data_loader import CsvMatchDataSource
 from history_manager import (
@@ -157,6 +160,87 @@ class Version7CStreamlitTest(unittest.TestCase):
             if button.label == "13試合を予想する"
         ).click()
         return app.run(timeout=25)
+
+    def test_cached_three_argument_renderer_is_reloaded_before_tab_call(
+        self,
+    ) -> None:
+        current_renderer = bet_optimization_ui.render_bet_optimization_tab
+
+        def cached_renderer(
+            *,
+            prediction_history_manager,
+            history_manager,
+            active_draw_settings,
+        ):
+            return current_renderer(
+                prediction_history_manager=prediction_history_manager,
+                history_manager=history_manager,
+                active_draw_settings=active_draw_settings,
+            )
+
+        bet_optimization_ui.render_bet_optimization_tab = cached_renderer
+        try:
+            app = self._predicted_app()
+            runtime_signature = inspect.signature(
+                bet_optimization_ui.render_bet_optimization_tab
+            )
+            self.assertEqual(
+                tuple(runtime_signature.parameters),
+                (
+                    "prediction_history_manager",
+                    "history_manager",
+                    "active_draw_settings",
+                    "fallback_matches",
+                ),
+            )
+            self.assertTrue(
+                any(
+                    item.value == "Version7-C 買い目最適化"
+                    for item in app.subheader
+                )
+            )
+            self.assertEqual(len(app.exception), 0)
+            self.assertEqual(len(app.error), 0)
+        finally:
+            bet_optimization_ui.render_bet_optimization_tab = current_renderer
+
+    def test_renderer_signature_matches_every_app_call(self) -> None:
+        signature = inspect.signature(
+            bet_optimization_ui.render_bet_optimization_tab
+        )
+        expected_keywords = tuple(signature.parameters)
+        self.assertEqual(
+            expected_keywords,
+            (
+                "prediction_history_manager",
+                "history_manager",
+                "active_draw_settings",
+                "fallback_matches",
+            ),
+        )
+        self.assertTrue(
+            all(
+                parameter.kind is inspect.Parameter.KEYWORD_ONLY
+                for parameter in signature.parameters.values()
+            )
+        )
+
+        app_tree = ast.parse(
+            (PROJECT_ROOT / "app.py").read_text(encoding="utf-8")
+        )
+        calls = [
+            node
+            for node in ast.walk(app_tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "render_bet_optimization_tab"
+        ]
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(calls[0].args), 0)
+        self.assertEqual(
+            tuple(keyword.arg for keyword in calls[0].keywords),
+            expected_keywords,
+        )
 
     def test_toto_ai_plan_manual_change_and_csv_have_no_screen_error(self) -> None:
         app = self._predicted_app()
