@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import importlib
 import inspect
 import os
 import tempfile
@@ -15,7 +16,12 @@ import streamlit as st
 from streamlit.testing.v1 import AppTest
 
 import bet_optimization_ui
+import bet_export
 from analysis import Version7AHistoryGenerationResult
+from bet_export import (
+    BET_PLAN_DISPLAY_COLUMNS,
+    BET_PLAN_DISPLAY_SCHEMA_VERSION,
+)
 from data_loader import CsvMatchDataSource
 from history_manager import (
     TotoRoundLoadResult,
@@ -57,6 +63,38 @@ def completed_history(version: str = "Version7-A") -> pd.DataFrame:
                     "payout_yen": 0,
                 }
             )
+    return pd.DataFrame(rows)
+
+
+def display_probability_frame(*, include_draw_candidates: bool) -> pd.DataFrame:
+    patterns = (
+        (70.0, 18.0, 12.0),
+        (38.0, 35.0, 27.0),
+        (35.0, 33.0, 32.0),
+        (50.0, 10.0, 40.0),
+        (45.0, 35.0, 20.0),
+    )
+    rows = []
+    for number in range(1, 14):
+        probabilities = (
+            patterns[(number - 1) % len(patterns)]
+            if include_draw_candidates
+            else (70.0, 10.0, 20.0)
+        )
+        rows.append(
+            {
+                "toto_round": 1703,
+                "toto_match_number": number,
+                "対戦カード": f"ホーム{number} vs アウェイ{number}",
+                "1": probabilities[0],
+                "0": probabilities[1],
+                "2": probabilities[2],
+                "draw_candidate": bool(
+                    include_draw_candidates and number % 5 in (2, 3, 0)
+                ),
+                "prediction_version": "Version7-A",
+            }
+        )
     return pd.DataFrame(rows)
 
 
@@ -160,6 +198,58 @@ class Version7CStreamlitTest(unittest.TestCase):
             if button.label == "13試合を予想する"
         ).click()
         return app.run(timeout=25)
+
+    @staticmethod
+    def _display_plan_frames(app: AppTest) -> list[pd.DataFrame]:
+        return [
+            element.value
+            for element in app.dataframe
+            if isinstance(element.value, pd.DataFrame)
+            and tuple(element.value.columns) == BET_PLAN_DISPLAY_COLUMNS
+        ]
+
+    def test_cached_legacy_plan_schema_is_reloaded_before_plan_render(
+        self,
+    ) -> None:
+        current_builder = bet_export.bet_plan_frame
+
+        def legacy_builder(plan):
+            return current_builder(plan).drop(
+                columns=[
+                    "Draw Inclusion Score",
+                    "Draw Inclusion判定",
+                    "0入替Coverage低下",
+                ]
+            )
+
+        bet_export.BET_PLAN_DISPLAY_SCHEMA_VERSION = 0
+        bet_export.bet_plan_frame = legacy_builder
+        bet_optimization_ui.BET_PLAN_DISPLAY_SCHEMA_VERSION = 0
+        try:
+            app = self._predicted_app()
+            next(
+                button
+                for button in app.button
+                if button.key == "version7c_optimize"
+            ).click()
+            app = app.run(timeout=25)
+
+            self.assertEqual(
+                bet_export.BET_PLAN_DISPLAY_SCHEMA_VERSION,
+                BET_PLAN_DISPLAY_SCHEMA_VERSION,
+            )
+            self.assertEqual(
+                bet_optimization_ui.BET_PLAN_DISPLAY_SCHEMA_VERSION,
+                BET_PLAN_DISPLAY_SCHEMA_VERSION,
+            )
+            frames = self._display_plan_frames(app)
+            self.assertGreaterEqual(len(frames), 2)
+            self.assertTrue(all(len(frame) == 13 for frame in frames))
+            self.assertEqual(len(app.exception), 0)
+            self.assertEqual(len(app.error), 0)
+        finally:
+            importlib.reload(bet_export)
+            importlib.reload(bet_optimization_ui)
 
     def test_cached_three_argument_renderer_is_reloaded_before_tab_call(
         self,
@@ -268,6 +358,13 @@ class Version7CStreamlitTest(unittest.TestCase):
         self.assertEqual(ai_plan.ticket_count, 8)
         self.assertEqual(ai_plan.purchase_amount_yen, 800)
         self.assertEqual(manual_plan.ticket_count, 8)
+        plan_frames = self._display_plan_frames(app)
+        self.assertGreaterEqual(len(plan_frames), 2)
+        self.assertTrue(all(len(frame) == 13 for frame in plan_frames))
+        self.assertEqual(
+            set(BET_PLAN_DISPLAY_COLUMNS) - set(plan_frames[0].columns),
+            set(),
+        )
         self.assertGreaterEqual(
             sum("version7c" in str(item.key) for item in app.download_button),
             2,
@@ -285,6 +382,56 @@ class Version7CStreamlitTest(unittest.TestCase):
         self.assertEqual(changed.triple_count, 1)
         self.assertEqual(changed.ticket_count, 24)
         self.assertEqual(changed.purchase_amount_yen, 2_400)
+        self.assertTrue(
+            any(
+                str(caption.value).startswith("変更後Coverage：")
+                for caption in app.caption
+            )
+        )
+        changed_frames = self._display_plan_frames(app)
+        self.assertGreaterEqual(len(changed_frames), 2)
+        self.assertTrue(all(len(frame) == 13 for frame in changed_frames))
+        self.assertEqual(len(app.exception), 0)
+        self.assertEqual(len(app.error), 0)
+
+    def test_mini_a_uses_formal_display_schema(self) -> None:
+        app = self._predicted_app()
+        next(
+            item for item in app.selectbox if item.key == "version7c_target"
+        ).select("mini toto A組（toto第1～5試合）")
+        app = app.run(timeout=25)
+        next(
+            item
+            for item in app.selectbox
+            if item.key == "version7c_double_choice_mini_a"
+        ).select(2)
+        next(
+            item
+            for item in app.selectbox
+            if item.key == "version7c_triple_choice_mini_a"
+        ).select(1)
+        next(
+            button for button in app.button if button.key == "version7c_optimize"
+        ).click()
+        app = app.run(timeout=25)
+
+        plan = app.session_state["version7c_ai_plan"]
+        self.assertEqual(
+            (plan.match_count, plan.double_count, plan.triple_count),
+            (5, 2, 1),
+        )
+        self.assertEqual(plan.ticket_count, 12)
+        self.assertEqual(plan.purchase_amount_yen, 1_200)
+        self.assertEqual(
+            [
+                item.analysis.prediction.source_match_number
+                for item in plan.recommendations
+            ],
+            [1, 2, 3, 4, 5],
+        )
+        frames = self._display_plan_frames(app)
+        self.assertGreaterEqual(len(frames), 2)
+        self.assertTrue(all(len(frame) == 5 for frame in frames))
         self.assertEqual(len(app.exception), 0)
         self.assertEqual(len(app.error), 0)
 
@@ -322,6 +469,37 @@ class Version7CStreamlitTest(unittest.TestCase):
             ],
             [6, 7, 8, 9, 10],
         )
+        frames = self._display_plan_frames(app)
+        self.assertGreaterEqual(len(frames), 2)
+        self.assertTrue(all(len(frame) == 5 for frame in frames))
+        self.assertEqual(len(app.exception), 0)
+        self.assertEqual(len(app.error), 0)
+
+    def test_draw_candidate_and_no_candidate_frames_render_in_streamlit(self) -> None:
+        app = self._predicted_app()
+        app.session_state["latest_prediction_results"] = display_probability_frame(
+            include_draw_candidates=True
+        )
+        app = app.run(timeout=25)
+        next(
+            button for button in app.button if button.key == "version7c_optimize"
+        ).click()
+        app = app.run(timeout=25)
+        candidate_frame = self._display_plan_frames(app)[0]
+        self.assertIn("候補", set(candidate_frame["引分候補"]))
+        self.assertIn("—", set(candidate_frame["引分候補"]))
+        self.assertEqual(len(app.exception), 0)
+
+        app.session_state["latest_prediction_results"] = display_probability_frame(
+            include_draw_candidates=False
+        )
+        app = app.run(timeout=25)
+        next(
+            button for button in app.button if button.key == "version7c_optimize"
+        ).click()
+        app = app.run(timeout=25)
+        no_candidate_frame = self._display_plan_frames(app)[0]
+        self.assertEqual(set(no_candidate_frame["引分候補"]), {"—"})
         self.assertEqual(len(app.exception), 0)
         self.assertEqual(len(app.error), 0)
 

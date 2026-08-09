@@ -31,9 +31,11 @@ from bet_evaluation import (
     compare_bet_strategies,
 )
 from bet_export import (
+    BET_PLAN_DISPLAY_COLUMNS,
+    BET_PLAN_DISPLAY_SCHEMA_VERSION,
     CombinationLimitError,
     bet_plan_csv_bytes,
-    bet_plan_frame,
+    bet_plan_display_frame,
     combination_csv_bytes,
     combination_frame,
     purchase_entry_text,
@@ -725,38 +727,7 @@ def _sync_manual_outcomes(
 
 
 def _display_plan_frame(plan: BetPlan) -> pd.DataFrame:
-    frame = bet_plan_frame(plan)
-    columns = [
-        "試合番号",
-        "toto試合番号",
-        "ホーム",
-        "アウェイ",
-        "P(1)",
-        "P(0)",
-        "P(2)",
-        "1位予測",
-        "2位予測",
-        "確率差",
-        "引分候補",
-        "不確実性Score",
-        "Draw Inclusion Score",
-        "Draw Inclusion判定",
-        "シングル信頼度",
-        "推奨区分",
-        "推奨買い目",
-        "Coverage",
-        "判定理由",
-    ]
-    return frame[columns].round(
-        {
-            "P(1)": 1,
-            "P(0)": 1,
-            "P(2)": 1,
-            "確率差": 1,
-            "不確実性Score": 1,
-            "Coverage": 1,
-        }
-    )
+    return bet_plan_display_frame(plan)
 
 
 def _saved_toto_payouts(

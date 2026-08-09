@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from io import BytesIO
 import math
 import unittest
+from unittest.mock import patch
 
 import pandas as pd
 
@@ -19,8 +21,12 @@ from bet_evaluation import (
     compare_bet_strategies,
 )
 from bet_export import (
+    BET_PLAN_DISPLAY_COLUMNS,
+    BET_PLAN_FRAME_COLUMNS,
+    BetPlanSchemaError,
     CombinationLimitError,
     bet_plan_csv_bytes,
+    bet_plan_display_frame,
     bet_plan_frame,
     combination_csv_bytes,
     combination_frame,
@@ -383,6 +389,89 @@ class Version7CInputValidationTest(unittest.TestCase):
         self.assertFalse(is_budget_exceeded(3, 1, None))
 
 
+class Version7CPlanDisplaySchemaTest(unittest.TestCase):
+    @staticmethod
+    def _plan(target: str, doubles: int, triples: int):
+        return optimize_bet_plan(
+            build_match_predictions(probability_frame(), target),
+            target=target,
+            double_count=doubles,
+            triple_count=triples,
+        )
+
+    def _assert_formal_schema(self, plan, expected_rows: int) -> None:
+        full_frame = bet_plan_frame(plan)
+        display_frame = bet_plan_display_frame(plan)
+        self.assertEqual(len(full_frame), expected_rows)
+        self.assertEqual(len(display_frame), expected_rows)
+        self.assertEqual(tuple(full_frame.columns), BET_PLAN_FRAME_COLUMNS)
+        self.assertEqual(tuple(display_frame.columns), BET_PLAN_DISPLAY_COLUMNS)
+        self.assertEqual(
+            set(BET_PLAN_DISPLAY_COLUMNS) - set(display_frame.columns),
+            set(),
+        )
+
+    def test_toto_mini_a_mini_b_and_manual_plan_share_one_schema(self) -> None:
+        cases = (
+            ("toto", 3, 1, 13),
+            ("mini_a", 2, 1, 5),
+            ("mini_b", 2, 1, 5),
+        )
+        for target, doubles, triples, expected_rows in cases:
+            with self.subTest(target=target):
+                self._assert_formal_schema(
+                    self._plan(target, doubles, triples),
+                    expected_rows,
+                )
+
+        base_plan = self._plan("mini_a", 0, 0)
+        manual_plan = apply_manual_selections(
+            base_plan,
+            {1: ("1", "0"), 2: ("1", "0", "2")},
+        )
+        self._assert_formal_schema(manual_plan, 5)
+        manual_frame = bet_plan_display_frame(manual_plan)
+        self.assertEqual(manual_frame.loc[0, "推奨区分"], "ダブル")
+        self.assertEqual(manual_frame.loc[1, "推奨区分"], "トリプル")
+        self.assertEqual(manual_frame.loc[0, "判定理由"], "手動調整")
+
+    def test_draw_candidate_and_non_candidate_rows_keep_draw_columns(self) -> None:
+        predictions = (
+            MatchPrediction(1, 1, "H1", "A1", 0.40, 0.27, 0.33, True),
+            MatchPrediction(2, 2, "H2", "A2", 0.70, 0.18, 0.12),
+            MatchPrediction(3, 3, "H3", "A3", 0.35, 0.33, 0.32),
+            MatchPrediction(4, 4, "H4", "A4", 0.50, 0.10, 0.40),
+            MatchPrediction(5, 5, "H5", "A5", 0.45, 0.35, 0.20),
+        )
+        plan = optimize_bet_plan(
+            predictions,
+            target="mini_a",
+            double_count=5,
+            triple_count=0,
+        )
+        frame = bet_plan_display_frame(plan)
+        self.assertIn("候補", set(frame["引分候補"]))
+        self.assertIn("—", set(frame["引分候補"]))
+        self.assertTrue(
+            any(value != "—" for value in frame["Draw Inclusion Score"])
+        )
+        self.assertTrue(
+            any(value == "—" for value in frame["Draw Inclusion Score"])
+        )
+
+    def test_missing_required_columns_fail_with_names(self) -> None:
+        plan = self._plan("mini_a", 2, 1)
+        incomplete = bet_plan_frame(plan).drop(
+            columns=["Draw Inclusion Score", "Draw Inclusion判定"]
+        )
+        with patch("bet_export.bet_plan_frame", return_value=incomplete):
+            with self.assertRaisesRegex(
+                BetPlanSchemaError,
+                "Draw Inclusion Score.*Draw Inclusion判定",
+            ):
+                bet_plan_display_frame(plan)
+
+
 class Version7CCoverageManualAndExportTest(unittest.TestCase):
     def setUp(self) -> None:
         self.plan = optimize_bet_plan(
@@ -432,8 +521,11 @@ class Version7CCoverageManualAndExportTest(unittest.TestCase):
         self.assertEqual(len(summary), 5)
         self.assertEqual(len(combinations), 12)
         self.assertEqual(list(combinations["口番号"]), list(range(1, 13)))
-        self.assertTrue(bet_plan_csv_bytes(plan).startswith(b"\xef\xbb\xbf"))
+        plan_csv = bet_plan_csv_bytes(plan)
+        self.assertTrue(plan_csv.startswith(b"\xef\xbb\xbf"))
         self.assertTrue(combination_csv_bytes(plan).startswith(b"\xef\xbb\xbf"))
+        csv_frame = pd.read_csv(BytesIO(plan_csv), encoding="utf-8-sig")
+        self.assertEqual(tuple(csv_frame.columns), BET_PLAN_FRAME_COLUMNS)
         self.assertFalse(summary.isna().any().any())
 
     def test_combination_explosion_is_blocked_but_summary_remains_available(self) -> None:

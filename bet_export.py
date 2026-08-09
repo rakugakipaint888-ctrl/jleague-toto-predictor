@@ -14,6 +14,70 @@ class CombinationLimitError(BetOptimizationError):
     """全組み合わせの安全な展開上限を超えた。"""
 
 
+class BetPlanSchemaError(BetOptimizationError):
+    """買い目表の生成スキーマと表示スキーマが一致しない。"""
+
+
+# Streamlitのhot rerunで旧moduleが残った場合も契約差を検出できるよう、
+# 買い目表の正式な列順をこのmoduleだけで管理する。
+BET_PLAN_DISPLAY_SCHEMA_VERSION = 1
+BET_PLAN_FRAME_COLUMNS = (
+    "試合番号",
+    "toto試合番号",
+    "ホーム",
+    "アウェイ",
+    "P(1)",
+    "P(0)",
+    "P(2)",
+    "1位予測",
+    "2位予測",
+    "確率差",
+    "引分候補",
+    "Entropy",
+    "不確実性Score",
+    "ダブル候補Score",
+    "トリプル候補Score",
+    "Draw Inclusion Score",
+    "Draw Inclusion判定",
+    "0入替Coverage低下",
+    "シングル信頼度",
+    "シングル信頼度Score",
+    "推奨区分",
+    "推奨買い目",
+    "Coverage",
+    "判定理由",
+)
+BET_PLAN_DISPLAY_COLUMNS = (
+    "試合番号",
+    "toto試合番号",
+    "ホーム",
+    "アウェイ",
+    "P(1)",
+    "P(0)",
+    "P(2)",
+    "1位予測",
+    "2位予測",
+    "確率差",
+    "引分候補",
+    "不確実性Score",
+    "Draw Inclusion Score",
+    "Draw Inclusion判定",
+    "シングル信頼度",
+    "推奨区分",
+    "推奨買い目",
+    "Coverage",
+    "判定理由",
+)
+BET_PLAN_DISPLAY_ROUNDING = {
+    "P(1)": 1,
+    "P(0)": 1,
+    "P(2)": 1,
+    "確率差": 1,
+    "不確実性Score": 1,
+    "Coverage": 1,
+}
+
+
 def bet_plan_frame(plan: BetPlan) -> pd.DataFrame:
     """購入入力と監査に必要な試合別情報を1行ずつ返す。"""
 
@@ -63,7 +127,26 @@ def bet_plan_frame(plan: BetPlan) -> pd.DataFrame:
                 "判定理由": recommendation.reason,
             }
         )
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows, columns=BET_PLAN_FRAME_COLUMNS)
+
+
+def bet_plan_display_frame(plan: BetPlan) -> pd.DataFrame:
+    """正式な表示列を検証し、toto／mini／手動案を同じ形で返す。"""
+
+    frame = bet_plan_frame(plan)
+    missing_columns = tuple(
+        column
+        for column in BET_PLAN_DISPLAY_COLUMNS
+        if column not in frame.columns
+    )
+    if missing_columns:
+        raise BetPlanSchemaError(
+            "買い目表示スキーマの必須列が不足しています："
+            + "、".join(missing_columns)
+        )
+    return frame.loc[:, list(BET_PLAN_DISPLAY_COLUMNS)].round(
+        BET_PLAN_DISPLAY_ROUNDING
+    )
 
 
 def combination_frame(
