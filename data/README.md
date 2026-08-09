@@ -62,7 +62,7 @@ Version6～Version7-Bは`data/cache/`、`data/history/`、`data/config/`を
   Version7-A採用済み引分設定
 - `../config/version7a_backups/`：採用直前の設定を復元するJSONバックアップ
 - `../history/version7b_partial_trials.csv`：Version7-BのTrial完了ごとの途中結果
-- `../history/version7b_model_ranking.csv`：探索内Validation順の上位20モデル
+- `../history/version7b_model_ranking.csv`：Training内Walk Forward順の上位20モデル
 - `../history/version7b_optimization_history.csv`：探索方式、期間、seed、重み、
   Training／Validation指標、最適係数、判定、採用有無
 - `../config/version7b_model_settings.json`：画面でYESを選んだ場合だけ更新する

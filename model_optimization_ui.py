@@ -26,6 +26,7 @@ from model_compare import (
     training_validation_frame,
     trial_metrics_frame,
     version7a_comparison_frame,
+    walk_forward_stability_frame,
 )
 from model_evaluation import EvaluationWeights
 from model_optimizer import (
@@ -151,7 +152,7 @@ def _evaluation_weights(st) -> EvaluationWeights:
         ("calibration", "Calibration", 15.0),
         ("accuracy", "全体的中率", 15.0),
         ("draw_performance", "引分性能", 10.0),
-        ("validation_stability", "Validation安定性", 10.0),
+        ("validation_stability", "Walk Forward安定性", 10.0),
     )
     columns = st.columns(3)
     values = {}
@@ -189,7 +190,10 @@ def _render_graphs(st, result: OptimizationResult) -> None:
     graph = trial_metrics_frame(result)
     for column, title in (
         ("総合Score", "Trialごとの総合Score"),
-        ("Validation Score", "Validation Score推移"),
+        ("Walk Forward Score", "Training内Walk Forward Score推移"),
+        ("WF平均Score", "Walk Forward Fold平均Score推移"),
+        ("WF標準偏差", "Walk Forward Fold標準偏差推移"),
+        ("Worst Fold Score", "Worst Fold Score推移"),
         ("Brier Score", "Brier Score推移"),
         ("Log Loss", "Log Loss推移"),
         ("Calibration", "Calibration推移"),
@@ -198,8 +202,8 @@ def _render_graphs(st, result: OptimizationResult) -> None:
     ):
         st.subheader(title)
         st.line_chart(graph[[column]])
-    st.subheader("Training ScoreとValidation Score比較")
-    st.line_chart(graph[["Training Score", "Validation Score"]])
+    st.subheader("Training全体ScoreとWalk Forward Score比較")
+    st.line_chart(graph[["Training全体Score", "Walk Forward Score"]])
     importance = parameter_importance_frame(result)
     st.subheader("パラメータ重要度")
     if importance.empty:
@@ -217,13 +221,13 @@ def _render_result(st, result: OptimizationResult, bootstrap_results) -> None:
                 "探索モデル数": len(result.all_trials),
                 "実際の使用期間": result.dataset.actual_period,
                 "Training期間": result.dataset.training_period,
-                "Validation期間": result.dataset.validation_period,
+                "最終Validation期間": result.dataset.validation_period,
                 "Training試合数": result.dataset.training_match_count,
-                "Validation試合数": result.dataset.validation_match_count,
+                "最終Validation試合数": result.dataset.validation_match_count,
                 "対象リーグ": result.dataset.target_league,
                 "検証方式": result.dataset.split.method,
-                "Best Score": result.best_score,
-                "Best Validation Score": result.best_validation_score,
+                "Best選定Score": result.best_score,
+                "最終Validation Score": result.best_validation_score,
             }
         ]
     )
@@ -246,7 +250,13 @@ def _render_result(st, result: OptimizationResult, bootstrap_results) -> None:
     comparison = version7a_comparison_frame(result)
     st.dataframe(comparison, width="stretch", hide_index=True)
 
-    st.subheader("モデルランキング（探索内Validation順・上位20件）")
+    recommendation = result.adoption_recommendation
+    if recommendation.recommend_version7b:
+        st.success(recommendation.label)
+    else:
+        st.warning(recommendation.label + "：" + " ".join(recommendation.reasons))
+
+    st.subheader("モデルランキング（Training内Walk Forward順・上位20件）")
     ranking = ranking_frame(result)
     st.dataframe(ranking, width="stretch", hide_index=True)
     st.download_button(
@@ -262,10 +272,36 @@ def _render_result(st, result: OptimizationResult, bootstrap_results) -> None:
     st.dataframe(parameters, width="stretch", hide_index=True)
 
     stability = stability_frame(result)
-    st.subheader("モデル安定性")
+    st.subheader("Training内Walk Forward安定性")
+    fold_stability = walk_forward_stability_frame(result)
+    stability_columns = st.columns(4)
+    stability_columns[0].metric(
+        "Fold平均",
+        f"{result.best_selection_validation.fold_mean_score:.4f}",
+    )
+    stability_columns[1].metric(
+        "Fold標準偏差",
+        f"{result.best_selection_validation.fold_score_standard_deviation:.4f}",
+    )
+    stability_columns[2].metric(
+        "Worst Fold",
+        f"{result.best_selection_validation.worst_fold_score:.4f}",
+    )
+    stability_columns[3].metric(
+        "安定性品質",
+        f"{result.best_selection_validation.stability_quality:.4f}",
+    )
+    st.dataframe(fold_stability, width="stretch", hide_index=True)
+    st.caption(
+        "このFold平均・標準偏差・Worst FoldはTraining内データだけで算出し、"
+        "最終Validationを含みません。"
+    )
+
+    st.subheader("Best決定後の期間・リーグ別安定性")
     st.caption(
         "シーズン別ScoreはTraining＋最終Validation、リーグ別Scoreは"
-        "最終Validationだけで算出します。"
+        "最終Validationだけで算出します。これらは選定後の確認表示で、"
+        "Trial順位には使用しません。"
     )
     if stability.empty:
         st.info("シーズン別・リーグ別の十分なデータを確認できません。")
@@ -288,7 +324,7 @@ def _render_result(st, result: OptimizationResult, bootstrap_results) -> None:
     _render_graphs(st, result)
 
     st.header("Version7-B最適設定の採用")
-    st.write("Version7-B最適設定を採用しますか？")
+    st.write(recommendation.label)
     st.caption(
         "YESの前に、現在設定・候補設定・Training／Validation結果・"
         "Version7-Aとの差・過学習・引分性能悪化を上の表で確認してください。"
@@ -299,7 +335,12 @@ def _render_result(st, result: OptimizationResult, bootstrap_results) -> None:
     )
     yes_column, no_column, restore_column = st.columns(3)
     with yes_column:
-        if st.button("YES", type="primary", key="version7b_adopt_yes"):
+        adopt_label = (
+            "YES"
+            if recommendation.recommend_version7b
+            else "それでもVersion7-Bを採用"
+        )
+        if st.button(adopt_label, type="primary", key="version7b_adopt_yes"):
             adoption = adopt_version7b_settings(
                 result.best_parameters,
                 confirmed=True,
@@ -476,10 +517,10 @@ def render_model_optimization_tab(
     slots[2].metric("残りTrial", plan.executable_models)
     slots[3].metric("経過時間", "00:00")
     slots[4].metric("推定残り", "—")
-    slots[5].metric("Best Score", "—")
+    slots[5].metric("Best選定Score", "—")
     secondary_columns = st.columns(4)
     secondary_slots = [column.empty() for column in secondary_columns]
-    secondary_slots[0].metric("Best Validation", "—")
+    secondary_slots[0].metric("Best WF統合Score", "—")
     secondary_slots[1].metric("Best Brier", "—")
     secondary_slots[2].metric("Best Log Loss", "—")
     secondary_slots[3].metric("Best引分F1", "—")
@@ -532,10 +573,10 @@ def render_model_optimization_tab(
                     "推定残り",
                     _format_seconds(item.estimated_remaining_seconds),
                 )
-                slots[5].metric("Best Score", f"{item.best_score:.4f}")
+                slots[5].metric("Best選定Score", f"{item.best_score:.4f}")
                 secondary_slots[0].metric(
-                    "Best Validation",
-                    f"{item.best_validation_score:.4f}",
+                    "Best WF統合Score",
+                    f"{item.best_walk_forward_score:.4f}",
                 )
                 secondary_slots[1].metric(
                     "Best Brier",
@@ -577,7 +618,7 @@ def render_model_optimization_tab(
             st.session_state["version7b_bootstrap_results"] = bootstrap_results
             progress.progress(1.0)
             status.success(
-                f"{len(result.all_trials)}モデル完了。Best Score "
+                f"{len(result.all_trials)}モデル完了。Training内Best選定Score "
                 f"{result.best_score:.4f}／最終Validation "
                 f"{result.best_validation_score:.4f}"
             )

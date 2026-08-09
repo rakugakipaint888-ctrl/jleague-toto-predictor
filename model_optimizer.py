@@ -43,6 +43,7 @@ from history_manager import TotoHistoryManager, TotoMatch, TotoRound
 from metrics import DEFAULT_TOTO_STAKE_YEN, toto_payout_for_hits
 from model_config import VERSION7A_DRAW_SEARCH_SPACE
 from model_evaluation import (
+    AdoptionRecommendation,
     DEFAULT_EVALUATION_WEIGHTS,
     CandidateEvaluation,
     DrawDegradationCheck,
@@ -55,6 +56,7 @@ from model_evaluation import (
     check_overfitting,
     comparison_rows,
     evaluate_candidate_rows,
+    recommend_model_adoption,
 )
 from parameter_manager import (
     ActiveVersion7BSettings,
@@ -241,6 +243,24 @@ class TrialRecord:
     duration_seconds: float
     final_validation: Optional[CandidateEvaluation] = None
 
+    @property
+    def walk_forward_score(self) -> float:
+        """旧CSV名raw_validation_scoreと互換のTraining内評価Score。"""
+
+        return self.raw_validation_score
+
+    @property
+    def fold_mean_score(self) -> Optional[float]:
+        return self.selection_validation.fold_mean_score
+
+    @property
+    def fold_score_standard_deviation(self) -> Optional[float]:
+        return self.selection_validation.fold_score_standard_deviation
+
+    @property
+    def worst_fold_score(self) -> Optional[float]:
+        return self.selection_validation.worst_fold_score
+
 
 @dataclass(frozen=True)
 class TrialProgress:
@@ -274,6 +294,12 @@ class TrialProgress:
             0.0,
             self.elapsed_seconds / self.current_trial * self.remaining_trials,
         )
+
+    @property
+    def best_walk_forward_score(self) -> float:
+        """旧公開名best_validation_scoreを維持した意味明示用alias。"""
+
+        return self.best_validation_score
 
 
 @dataclass(frozen=True)
@@ -316,6 +342,15 @@ class OptimizationResult:
         return comparison_rows(
             self.baseline_final_validation,
             self.best_final_validation,
+        )
+
+    @property
+    def adoption_recommendation(self) -> AdoptionRecommendation:
+        return recommend_model_adoption(
+            self.baseline_final_validation,
+            self.best_final_validation,
+            self.overfitting,
+            self.draw_degradation,
         )
 
 
@@ -1069,12 +1104,6 @@ def run_model_optimization(
         weights=configuration.evaluation_weights,
         fold_validation_rounds=fold_groups,
     )
-    baseline_final = evaluate_parameter_set(
-        dataset.validation_rounds,
-        version7a_baseline.parameters,
-        target_league=dataset.target_league,
-        weights=configuration.evaluation_weights,
-    )
     run_id = _run_id(dataset, configuration)
     started_at = datetime.now(JAPAN_TIMEZONE)
     monotonic_started = time.monotonic()
@@ -1232,27 +1261,40 @@ def run_model_optimization(
             records,
             key=lambda item: (
                 item.selection_score,
+                item.worst_fold_score
+                if item.worst_fold_score is not None
+                else -math.inf,
+                -(
+                    item.fold_score_standard_deviation
+                    if item.fold_score_standard_deviation is not None
+                    else math.inf
+                ),
                 -(item.selection_validation.metrics.brier_score or 2.0),
                 -item.trial_number,
             ),
             reverse=True,
         )
     )
-    # 最終Validationは順位確定後に上位20件だけ評価し、順位変更には使わない。
-    ranking_records = []
-    for record in ordered[:VERSION7B_RANKING_LIMIT]:
-        final_validation = evaluate_parameter_set(
-            dataset.validation_rounds,
-            record.parameters,
-            target_league=dataset.target_league,
-            weights=configuration.evaluation_weights,
-        )
-        ranking_records.append(replace(record, final_validation=final_validation))
-    ranking = tuple(ranking_records)
-    best = ranking[0]
-    best_final = best.final_validation
-    if best_final is None:
-        raise ModelOptimizationError("最良候補のValidationを評価できませんでした。")
+    # この時点でTraining内Walk Forwardだけを使った順位とBestを確定する。
+    # 最終Validationは順位・Optuna objective・パラメータ選択へ戻さない。
+    selected_best = ordered[0]
+    baseline_final = evaluate_parameter_set(
+        dataset.validation_rounds,
+        version7a_baseline.parameters,
+        target_league=dataset.target_league,
+        weights=configuration.evaluation_weights,
+    )
+    best_final = evaluate_parameter_set(
+        dataset.validation_rounds,
+        selected_best.parameters,
+        target_league=dataset.target_league,
+        weights=configuration.evaluation_weights,
+    )
+    best = replace(selected_best, final_validation=best_final)
+    ranking = (
+        best,
+        *ordered[1:VERSION7B_RANKING_LIMIT],
+    )
     overfitting = check_overfitting(
         best.training,
         best_final,
@@ -1477,24 +1519,17 @@ def save_model_ranking(
     result: OptimizationResult,
     path: Path = DEFAULT_MODEL_RANKING_PATH,
 ) -> bool:
-    """上位20モデルをrun_id付きで追記し、既存実行分だけ置換する。"""
+    """Training内Walk Forward上位20モデルを保存する。"""
 
     rows = _read_csv_rows(path, MODEL_RANKING_COLUMNS)
     rows = [row for row in rows if row.get("run_id") != result.run_id]
     for rank, record in enumerate(result.ranking, start=1):
-        final = record.final_validation or record.selection_validation
-        metrics = final.metrics
-        draw = final.draw
-        candidate_overfit = check_overfitting(
-            record.training,
-            final,
-            result.configuration.overfit_thresholds,
-        )
-        candidate_draw_check = check_draw_degradation(
-            result.baseline_final_validation,
-            final,
-            result.configuration.draw_tolerances,
-        )
+        # ランキング指標は全行でTraining内Walk Forwardへ統一する。
+        # 最終Validation値は、順位確定後に評価したBest行だけ保存する。
+        selection = record.selection_validation
+        metrics = selection.metrics
+        draw = selection.draw
+        is_best = record.final_validation is not None
         rows.append(
             {
                 "run_id": result.run_id,
@@ -1503,7 +1538,9 @@ def save_model_ranking(
                 "trial_number": record.trial_number,
                 "search_stage": record.search_stage,
                 "score": record.selection_score,
-                "validation_score": final.score,
+                "validation_score": (
+                    record.final_validation.score if is_best else ""
+                ),
                 "training_score": record.training.score,
                 "brier_score": metrics.brier_score,
                 "log_loss": metrics.log_loss,
@@ -1517,8 +1554,14 @@ def save_model_ranking(
                 "prediction_share_1": metrics.prediction_share["1"],
                 "prediction_share_0": metrics.prediction_share["0"],
                 "prediction_share_2": metrics.prediction_share["2"],
-                "overfitting": candidate_overfit.label,
-                "draw_degradation": candidate_draw_check.label,
+                "overfitting": (
+                    result.overfitting.label if is_best else "最終Validation未評価"
+                ),
+                "draw_degradation": (
+                    result.draw_degradation.label
+                    if is_best
+                    else record.draw_degradation.label
+                ),
                 "parameters": _parameter_signature(record.parameters),
             }
         )

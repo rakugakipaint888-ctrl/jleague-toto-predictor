@@ -10,8 +10,6 @@ import pandas as pd
 from bootstrap_evaluation import BootstrapEvaluation
 from model_evaluation import (
     CandidateEvaluation,
-    check_draw_degradation,
-    check_overfitting,
     comparison_rows,
 )
 from model_optimizer import OptimizationResult
@@ -102,12 +100,29 @@ def training_validation_frame(result: OptimizationResult) -> pd.DataFrame:
 
 
 def version7a_comparison_frame(result: OptimizationResult) -> pd.DataFrame:
-    return pd.DataFrame(
-        comparison_rows(
-            result.baseline_final_validation,
-            result.best_final_validation,
-        )
+    rows = comparison_rows(
+        result.baseline_final_validation,
+        result.best_final_validation,
     )
+    baseline_drop = (
+        result.baseline_training.score - result.baseline_final_validation.score
+    )
+    candidate_drop = result.best_training.score - result.best_final_validation.score
+    difference = candidate_drop - baseline_drop
+    rows.append(
+        {
+            "項目": "Training→ValidationのScore低下量",
+            "Version7-A": baseline_drop,
+            "Version7-B候補": candidate_drop,
+            "差": difference,
+            "評価": (
+                "同等"
+                if abs(difference) < 1e-12
+                else ("改善" if difference < 0 else "悪化")
+            ),
+        }
+    )
+    return pd.DataFrame(rows)
 
 
 def parameter_comparison_frame(result: OptimizationResult) -> pd.DataFrame:
@@ -140,26 +155,23 @@ def parameter_comparison_frame(result: OptimizationResult) -> pd.DataFrame:
 def ranking_frame(result: OptimizationResult) -> pd.DataFrame:
     rows = []
     for rank, record in enumerate(result.ranking, start=1):
-        final = record.final_validation or record.selection_validation
-        metrics = final.metrics
-        draw = final.draw
-        overfitting = check_overfitting(
-            record.training,
-            final,
-            result.configuration.overfit_thresholds,
-        )
-        draw_degradation = check_draw_degradation(
-            result.baseline_final_validation,
-            final,
-            result.configuration.draw_tolerances,
-        )
+        selection = record.selection_validation
+        metrics = selection.metrics
+        draw = selection.draw
+        is_best = record.final_validation is not None
         rows.append(
             {
                 "順位": rank,
                 "Trial": record.trial_number,
-                "総合Score": record.selection_score,
-                "Validation Score": final.score,
-                "Training Score": record.training.score,
+                "選定Score": record.selection_score,
+                "WF統合Score": record.walk_forward_score,
+                "WF平均Score": record.fold_mean_score,
+                "WF標準偏差": record.fold_score_standard_deviation,
+                "Worst Fold Score": record.worst_fold_score,
+                "最終Validation Score": (
+                    record.final_validation.score if is_best else None
+                ),
+                "Training全体Score": record.training.score,
                 "Brier Score": metrics.brier_score,
                 "Log Loss": metrics.log_loss,
                 "Calibration": metrics.calibration_error,
@@ -172,8 +184,15 @@ def ranking_frame(result: OptimizationResult) -> pd.DataFrame:
                 "1予測率": metrics.prediction_share["1"],
                 "0予測率": metrics.prediction_share["0"],
                 "2予測率": metrics.prediction_share["2"],
-                "過学習判定": overfitting.label,
-                "引分性能悪化判定": draw_degradation.label,
+                "最終Validation評価": "Bestのみ実施" if is_best else "未使用",
+                "過学習判定": (
+                    result.overfitting.label if is_best else "最終Validation未評価"
+                ),
+                "引分性能悪化判定": (
+                    result.draw_degradation.label
+                    if is_best
+                    else record.draw_degradation.label + "（Training内）"
+                ),
                 "パラメータ": json.dumps(
                     record.parameters.as_dict(),
                     ensure_ascii=False,
@@ -192,8 +211,11 @@ def trial_metrics_frame(result: OptimizationResult) -> pd.DataFrame:
             {
                 "Trial": record.trial_number,
                 "総合Score": record.selection_score,
-                "Validation Score": record.raw_validation_score,
-                "Training Score": record.training.score,
+                "Walk Forward Score": record.walk_forward_score,
+                "WF平均Score": record.fold_mean_score,
+                "WF標準偏差": record.fold_score_standard_deviation,
+                "Worst Fold Score": record.worst_fold_score,
+                "Training全体Score": record.training.score,
                 "Brier Score": metrics.brier_score,
                 "Log Loss": metrics.log_loss,
                 "Calibration": metrics.calibration_error,
@@ -202,6 +224,19 @@ def trial_metrics_frame(result: OptimizationResult) -> pd.DataFrame:
             }
         )
     return pd.DataFrame(rows).set_index("Trial") if rows else pd.DataFrame()
+
+
+def walk_forward_stability_frame(result: OptimizationResult) -> pd.DataFrame:
+    """Best選定に使ったTraining内Fold Scoreだけを表示する。"""
+
+    labels = tuple(fold.label for fold in result.dataset.split.folds)
+    scores = result.best_selection_validation.fold_scores
+    return pd.DataFrame(
+        [
+            {"Fold": label, "Score": score}
+            for label, score in zip(labels, scores)
+        ]
+    )
 
 
 def parameter_importance_frame(result: OptimizationResult) -> pd.DataFrame:

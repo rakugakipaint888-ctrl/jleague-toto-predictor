@@ -21,6 +21,7 @@ from model_compare import (
     training_validation_frame,
     trial_metrics_frame,
     version7a_comparison_frame,
+    walk_forward_stability_frame,
 )
 from model_evaluation import (
     EvaluationWeights,
@@ -29,6 +30,8 @@ from model_evaluation import (
     check_draw_degradation,
     check_overfitting,
     evaluate_candidate_rows,
+    recommend_model_adoption,
+    stability_quality,
 )
 from model_optimizer import (
     ALL_LEAGUES,
@@ -295,6 +298,44 @@ class Version7BParameterAndEvaluationTest(unittest.TestCase):
         overfit = check_overfitting(good, poor)
         self.assertTrue(overfit.is_overfitting)
         self.assertEqual(overfit.label, "過学習の可能性")
+        recommendation = recommend_model_adoption(good, poor, overfit, degradation)
+        self.assertFalse(recommendation.recommend_version7b)
+        self.assertEqual(recommendation.label, "Version7-A継続推奨")
+        improved = recommend_model_adoption(
+            poor,
+            good,
+            check_overfitting(good, good),
+            check_draw_degradation(good, good),
+        )
+        self.assertTrue(improved.recommend_version7b)
+        self.assertEqual(improved.label, "Version7-B採用候補")
+
+    def test_walk_forward_folds_are_equal_weighted_and_report_instability(self) -> None:
+        good = _metric_rows(good=True)
+        poor = _metric_rows(good=False)
+        balanced = evaluate_candidate_rows(
+            (*good, *poor),
+            fold_rows=(good, poor),
+        )
+        imbalanced = evaluate_candidate_rows(
+            (*good, *good, *good, *good, *poor),
+            fold_rows=((*good, *good, *good, *good), poor),
+        )
+        self.assertAlmostEqual(balanced.score, imbalanced.score, places=12)
+        self.assertEqual(balanced.fold_scores, imbalanced.fold_scores)
+        self.assertGreater(balanced.fold_score_standard_deviation, 0.0)
+        self.assertEqual(balanced.worst_fold_score, min(balanced.fold_scores))
+        self.assertAlmostEqual(
+            balanced.fold_mean_score,
+            sum(balanced.fold_scores) / len(balanced.fold_scores),
+            places=12,
+        )
+        self.assertNotEqual(
+            balanced.metrics.accuracy,
+            imbalanced.metrics.accuracy,
+        )
+        self.assertAlmostEqual(stability_quality((70.0, 70.0)), 1.0)
+        self.assertAlmostEqual(stability_quality((80.0, 60.0)), 0.25)
 
     def test_league_stability_uses_only_the_supplied_final_validation_rows(
         self,
@@ -526,8 +567,13 @@ class Version7BSearchAndReportingTest(unittest.TestCase):
         self.assertEqual(len(ranking_lines), 11)
         self.assertEqual(len(history_lines), 2)
         self.assertEqual(len(partial_lines), 11)
+        self.assertEqual(
+            sum(record.final_validation is not None for record in ten.ranking),
+            1,
+        )
+        self.assertIsNotNone(ten.ranking[0].final_validation)
         self.assertTrue(
-            all(record.final_validation is not None for record in ten.ranking)
+            all(record.final_validation is None for record in ten.ranking[1:])
         )
         self.assertGreater(
             len({record.parameters for record in ten.all_trials}),
@@ -641,6 +687,37 @@ class Version7BSearchAndReportingTest(unittest.TestCase):
             [row.actual_result for row in changed_final.best_final_validation.rows],
         )
 
+    def test_final_validation_runs_only_after_training_ranking_is_complete(self) -> None:
+        events = []
+
+        def evaluate_and_trace(rounds, parameters, **kwargs):
+            round_ids = tuple(getattr(item, "round_id", 0) for item in rounds)
+            events.append((round_ids, parameters.model.home_correction))
+            return _fake_evaluate_parameter_set(rounds, parameters, **kwargs)
+
+        with tempfile.TemporaryDirectory() as temporary_directory, patch(
+            "model_optimizer.evaluate_parameter_set",
+            side_effect=evaluate_and_trace,
+        ):
+            result = run_model_optimization(
+                _lightweight_dataset(),
+                SearchConfiguration(
+                    method=RANDOM_SEARCH,
+                    trial_count=10,
+                    random_seed=8642,
+                ),
+                partial_path=Path(temporary_directory) / "final-order.csv",
+            )
+        final_events = [event for event in events if event[0] == (300,)]
+        self.assertEqual(len(final_events), 2)
+        self.assertEqual(events[-2:], final_events)
+        self.assertEqual(final_events[0][1], 1.08)
+        self.assertEqual(final_events[1][1], result.best_parameters.model.home_correction)
+        self.assertEqual(
+            sum(record.final_validation is not None for record in result.ranking),
+            1,
+        )
+
     def test_version7a_baseline_stays_fixed_after_a_version7b_adoption(self) -> None:
         adopted_parameters = Version7BParameters.from_mapping({"home_correction": 1.18})
         adopted = ActiveVersion7BSettings(
@@ -664,7 +741,8 @@ class Version7BSearchAndReportingTest(unittest.TestCase):
                 current_settings=adopted,
                 partial_path=Path(temporary_directory) / "adopted.csv",
             )
-        self.assertEqual(observed[:3], [1.08, 1.08, 1.08])
+        self.assertEqual(observed[:2], [1.08, 1.08])
+        self.assertEqual(observed[-2:], [1.08, 1.18])
         self.assertEqual(result.current_settings.parameters, adopted_parameters)
         self.assertEqual(result.best_parameters, adopted_parameters)
 
@@ -723,6 +801,11 @@ class Version7BSearchAndReportingTest(unittest.TestCase):
             self.assertGreaterEqual(len(version7a_comparison_frame(result)), 10)
             self.assertEqual(len(ranking_frame(result)), 10)
             self.assertEqual(len(trial_metrics_frame(result)), 10)
+            self.assertEqual(len(walk_forward_stability_frame(result)), 1)
+            self.assertIn(
+                "Training→ValidationのScore低下量",
+                set(version7a_comparison_frame(result)["項目"]),
+            )
             self.assertGreater(len(parameter_comparison_frame(result)), 10)
             self.assertEqual(len(bootstrap_frame({1: bootstrap_first})), 5)
 

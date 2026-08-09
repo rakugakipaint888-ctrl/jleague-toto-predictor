@@ -23,6 +23,9 @@ EVALUATION_KEYS = (
     "draw_performance",
     "validation_stability",
 )
+PERFORMANCE_KEYS = tuple(
+    key for key in EVALUATION_KEYS if key != "validation_stability"
+)
 
 
 @dataclass(frozen=True)
@@ -50,6 +53,11 @@ class EvaluationWeights:
             raise ValueError("評価重みは0以上の有限値にしてください。")
         if sum(values.values()) <= 0:
             raise ValueError("評価重みを1項目以上設定してください。")
+        if sum(values[key] for key in PERFORMANCE_KEYS) <= 0:
+            raise ValueError(
+                "Brier・Log Loss・Calibration・的中率・引分性能の"
+                "いずれかへ重みを設定してください。"
+            )
 
     def as_dict(self) -> dict[str, float]:
         return {key: float(getattr(self, key)) for key in EVALUATION_KEYS}
@@ -107,6 +115,26 @@ class CandidateEvaluation:
     def draw(self):
         return self.draw_evaluation.draw
 
+    @property
+    def fold_mean_score(self) -> Optional[float]:
+        if not self.fold_scores:
+            return None
+        return statistics.fmean(self.fold_scores)
+
+    @property
+    def fold_score_standard_deviation(self) -> Optional[float]:
+        if not self.fold_scores:
+            return None
+        return (
+            statistics.pstdev(self.fold_scores)
+            if len(self.fold_scores) >= 2
+            else 0.0
+        )
+
+    @property
+    def worst_fold_score(self) -> Optional[float]:
+        return min(self.fold_scores) if self.fold_scores else None
+
 
 @dataclass(frozen=True)
 class DrawDegradationCheck:
@@ -135,6 +163,22 @@ class StabilitySummary:
     season_scores: Mapping[str, float]
     league_scores: Mapping[str, float]
     warnings: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class AdoptionRecommendation:
+    """最終ValidationでVersion7-Bを採用候補とできるかの保守的判定。"""
+
+    recommend_version7b: bool
+    reasons: tuple[str, ...]
+
+    @property
+    def label(self) -> str:
+        return (
+            "Version7-B採用候補"
+            if self.recommend_version7b
+            else "Version7-A継続推奨"
+        )
 
 
 def _clamp01(value: float) -> float:
@@ -201,20 +245,25 @@ def _draw_evaluation(rows: Sequence[PredictionRow]) -> DrawEvaluation:
     )
 
 
-def _base_score(
-    rows: Sequence[PredictionRow],
+def _performance_score(
+    evaluation: DrawEvaluation,
     weights: EvaluationWeights,
 ) -> float:
-    evaluation = _draw_evaluation(rows)
     components = _component_scores(evaluation, 1.0)
-    return _score_from_components(components, weights)
+    normalized = weights.normalized()
+    performance_weight = sum(normalized[key] for key in PERFORMANCE_KEYS)
+    if performance_weight <= 0:
+        return 0.0
+    return 100.0 * sum(
+        components[key] * normalized[key] for key in PERFORMANCE_KEYS
+    ) / performance_weight
 
 
 def stability_quality(
     fold_scores: Sequence[float],
     reference_score: Optional[float] = None,
 ) -> float:
-    """Fold間ばらつきと全Trainingとの差を0～1の品質へ変換する。"""
+    """Fold間ばらつきとWorst Foldの落ち込みを0～1へ変換する。"""
 
     finite_scores = [float(value) for value in fold_scores if math.isfinite(value)]
     if not finite_scores:
@@ -223,8 +272,14 @@ def stability_quality(
         statistics.pstdev(finite_scores) if len(finite_scores) >= 2 else 0.0
     )
     mean_score = statistics.fmean(finite_scores)
+    worst_fold_gap = max(0.0, mean_score - min(finite_scores))
     optimistic_gap = max(0.0, float(reference_score or mean_score) - mean_score)
-    return _clamp01(1.0 - standard_deviation / 20.0 - optimistic_gap / 50.0)
+    return _clamp01(
+        1.0
+        - standard_deviation / 20.0
+        - worst_fold_gap / 40.0
+        - optimistic_gap / 50.0
+    )
 
 
 def evaluate_candidate_rows(
@@ -237,11 +292,26 @@ def evaluate_candidate_rows(
     """単位の異なる生指標を正規化し、0～100の総合Scoreへ変換する。"""
 
     evaluation = _draw_evaluation(rows)
-    provisional = _component_scores(evaluation, 1.0)
-    reference_score = _score_from_components(provisional, weights)
-    folds = tuple(_base_score(fold, weights) for fold in fold_rows if fold)
-    quality = stability_quality(folds, reference_score) if fold_rows else 1.0
-    components = _component_scores(evaluation, quality)
+    fold_evaluations = tuple(_draw_evaluation(fold) for fold in fold_rows if fold)
+    folds = tuple(
+        _performance_score(fold_evaluation, weights)
+        for fold_evaluation in fold_evaluations
+    )
+    quality = stability_quality(folds) if fold_evaluations else 1.0
+    if fold_evaluations:
+        # 各期間を同じ1 Foldとして平均する。開催回・試合数の多い期間が
+        # 探索Scoreを支配しないよう、連結行の指標は表示用にだけ保持する。
+        fold_components = tuple(
+            _component_scores(fold_evaluation, 1.0)
+            for fold_evaluation in fold_evaluations
+        )
+        components = {
+            key: statistics.fmean(item[key] for item in fold_components)
+            for key in PERFORMANCE_KEYS
+        }
+        components["validation_stability"] = quality
+    else:
+        components = _component_scores(evaluation, quality)
     return CandidateEvaluation(
         score=_score_from_components(components, weights),
         draw_evaluation=evaluation,
@@ -371,6 +441,70 @@ def check_overfitting(
                 f"Validationの{label}がTrainingから{degradation:.4f}悪化しています。"
             )
     return OverfittingCheck(bool(reasons), score_gap, tuple(reasons))
+
+
+def recommend_model_adoption(
+    baseline: CandidateEvaluation,
+    candidate: CandidateEvaluation,
+    overfitting: OverfittingCheck,
+    draw_degradation: DrawDegradationCheck,
+) -> AdoptionRecommendation:
+    """最終Validationだけで、明確な総合改善かを保守的に判定する。"""
+
+    reasons = []
+    if not math.isfinite(candidate.score) or not math.isfinite(baseline.score):
+        reasons.append("最終Validationの総合Scoreを比較できません。")
+    elif candidate.score <= baseline.score:
+        reasons.append(
+            "最終Validationの総合ScoreがVersion7-Aを上回っていません。"
+        )
+    comparisons = (
+        (
+            "Brier Score",
+            candidate.metrics.brier_score,
+            baseline.metrics.brier_score,
+            False,
+        ),
+        (
+            "Log Loss",
+            candidate.metrics.log_loss,
+            baseline.metrics.log_loss,
+            False,
+        ),
+        (
+            "Calibration",
+            candidate.metrics.calibration_error,
+            baseline.metrics.calibration_error,
+            False,
+        ),
+        (
+            "全体的中率",
+            candidate.metrics.accuracy,
+            baseline.metrics.accuracy,
+            True,
+        ),
+    )
+    for label, candidate_value, baseline_value, higher_is_better in comparisons:
+        if (
+            candidate_value is None
+            or baseline_value is None
+            or not math.isfinite(float(candidate_value))
+            or not math.isfinite(float(baseline_value))
+        ):
+            reasons.append(f"最終Validationの{label}を比較できません。")
+            continue
+        worsened = (
+            float(candidate_value) < float(baseline_value)
+            if higher_is_better
+            else float(candidate_value) > float(baseline_value)
+        )
+        if worsened:
+            reasons.append(f"最終Validationの{label}がVersion7-Aより悪化しています。")
+    if overfitting.is_overfitting:
+        reasons.append("Trainingから最終Validationへの過学習兆候があります。")
+    if draw_degradation.degraded:
+        reasons.append("Version7-A比で引分性能が許容幅を超えて悪化しています。")
+    return AdoptionRecommendation(not reasons, tuple(reasons))
 
 
 def grouped_score(

@@ -131,7 +131,7 @@ def bootstrap_top_models(
     random_seed: int,
     limit: int = 10,
 ) -> dict[int, BootstrapEvaluation]:
-    """順位を変えず、最終Validation済み上位10モデルまで再評価する。"""
+    """順位を変えず、最終Validation済みのBest候補だけを再評価する。"""
 
     if int(iterations) <= 0:
         return {}

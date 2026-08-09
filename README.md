@@ -86,9 +86,10 @@ Trial数を増やしても性能向上は保証されません。候補数、開
 
 初期検証方式は「シーズン単位ウォークフォワード」です。固定Training／Validation
 分割、シーズン単位ウォークフォワード、開催回単位ウォークフォワードから選べます。
-探索順位はTraining内の時系列FoldのValidationで決め、最終Validationは順位確定後に
-上位20モデルだけへ1回使用します。同じ試合をパラメータ選択と最終評価の両方には
-使いません。Training Scoreだけで順位を決めることもありません。
+探索順位はTraining内の時系列FoldのValidationで決めます。各Foldを同じ重みで平均し、
+Fold Scoreの標準偏差を安定性へ反映し、Worst Foldを同点時の優先順位に使います。
+最終Validationは順位とBest Trialの確定後に、Version7-AとBest候補だけへ使用します。
+同じ試合をパラメータ選択と最終評価の両方には使いません。
 
 各開催回のcutoffは最初の試合日の`00:00 JST`です。直近成績、会場別成績、
 シーズン集計、順位相当値、勝点、得失点差、Elo、引分特徴量は、必ずcutoffより前に
@@ -105,7 +106,7 @@ Training期間、Validation期間、試合数、データ不足リーグを表�
 ### 総合Scoreと評価指標
 
 初期重みはBrier Score 30%、Log Loss 20%、Calibration 15%、全体的中率15%、
-引分性能10%、Validation安定性10%です。画面で変更でき、合計100%でない場合は
+引分性能10%、Walk Forward安定性10%です。画面で変更でき、合計100%でない場合は
 警告して実行を停止します。内部では各指標を0～1の品質へ正規化してから0～100の
 総合Scoreへ変換します。小さいほど良いBrier、Log Loss、Calibrationと、大きいほど
 良い的中率・引分性能を同じ向きへ揃えるため、異なる単位の生値は加算しません。
@@ -127,28 +128,38 @@ Calibrationの増加が許容幅を超えると「引分性能悪化」とし、
 TrainingとValidationは、総合Score、Brier、Log Loss、Calibration、全体的中率、
 引分F1、引分Brier、引分Calibrationを別表示します。設定閾値を超える差は
 「過学習の可能性」と表示します。閾値は`VERSION7B_OVERFIT_THRESHOLDS`で管理します。
-最終候補ではシーズン別Score、リーグ別Score、Training／Validation差、Bootstrap
-信頼区間、Trial間のパラメータ重要度を確認できます。特定シーズンまたはリーグの
-Score範囲が大きい場合は警告します。
+最終候補ではTraining内Fold平均、Fold標準偏差、Worst Fold、安定性品質に加え、
+Best決定後のシーズン別Score、リーグ別Score、Training／Validation差、Bootstrap
+信頼区間、Trial間のパラメータ重要度を確認できます。個別指標のFold分散は総合Scoreと
+二重評価になるため重ねず、Brier・Log Loss・的中率・引分性能を含むFold Scoreで
+安定性を評価します。
+
+安定性品質は`1 - Fold標準偏差/20 - (Fold平均 - Worst Fold)/40`を0～1へ
+丸めて算出します。選定Scoreは各FoldのBrier・Log Loss・Calibration・的中率・
+引分性能の品質を等重み平均し、設定された安定性重みを加え、最後にTraining内の
+引分性能悪化ペナルティを差し引いた値です。
 
 ### ランキング、Bootstrap、比較グラフ
 
-探索後は探索内Validation順の上位20モデルを表示・専用CSVへ保存します。各行に
-Validation／Training Score、全体指標、引分5指標、1／0／2予測率、過学習判定、
-引分性能悪化判定、全パラメータを残します。最終Validationの値で探索順位を
-後から並べ替えないため、最終評価をパラメータ選択へ漏らしません。
+探索後はTraining内Walk Forward順の上位20モデルを表示・専用CSVへ保存します。
+各行に選定Score、Fold平均・標準偏差・Worst Fold、Training Score、全体指標、
+引分5指標、1／0／2予測率、全パラメータを残します。最終ValidationはBest行だけに
+表示し、その値で探索順位を後から並べ替えません。
 
-再評価はなし、1,000回、10,000回または任意回数を選べ、上位10モデルを試合単位の
-Bootstrapで復元抽出します。Brier、Log Loss、Calibration、全体的中率、引分F1の
+再評価はなし、1,000回、10,000回または任意回数を選べ、Training内で選定済みの
+Best候補だけを最終Validationの試合単位Bootstrapで復元抽出します。Brier、Log Loss、Calibration、全体的中率、引分F1の
 平均、中央値、標準偏差、95%信頼区間を算出します。同じデータ・設定・seedなら
 可能な限り再現します。決定論的な同じバックテストを単純に何千回も繰り返す処理
 ではありません。
 
-グラフはTrialごとの総合／Validation Score、Brier、Log Loss、Calibration、
-全体的中率、引分F1、Training対Validation、パラメータ重要度を表示します。加えて
+グラフはTrialごとの選定／Walk Forward Score、Fold平均・標準偏差・Worst Fold、
+Brier、Log Loss、Calibration、全体的中率、引分F1、Training全体との比較、
+パラメータ重要度を表示します。加えて
 シーズン別・リーグ別ScoreとBootstrap表を表示します。現在のVersion7-Aと候補は
 同じ最終Validationで13指標を「Version7-A／Version7-B候補／差／改善・悪化」として
-比較し、悪化した項目も隠しません。
+比較し、Training→ValidationのScore低下量も表示します。総合Score、Brier、
+Log Loss、Calibration、的中率をすべて上回り、過学習・引分悪化がない場合だけ
+「Version7-B採用候補」、それ以外は「Version7-A継続推奨」と表示します。
 
 ### 保存、採用、バックアップ
 

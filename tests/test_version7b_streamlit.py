@@ -170,6 +170,10 @@ class Version7BStreamlitTest(unittest.TestCase):
             self.assertEqual(len(app.error), 0)
             self.assertEqual(len(result.all_trials), 10)
             self.assertEqual(len(result.ranking), 10)
+            self.assertEqual(
+                sum(record.final_validation is not None for record in result.ranking),
+                1,
+            )
             with partial_path.open(encoding="utf-8-sig") as partial_file:
                 self.assertEqual(sum(1 for _ in csv.DictReader(partial_file)), 10)
             with history_path.open(encoding="utf-8-sig") as history_file:
@@ -178,6 +182,18 @@ class Version7BStreamlitTest(unittest.TestCase):
                 self.assertEqual(sum(1 for _ in csv.DictReader(ranking_file)), 10)
             self.assertTrue(
                 any("10モデル完了" in item.value for item in app.success)
+            )
+            visible_messages = [item.value for item in (*app.success, *app.warning)]
+            self.assertTrue(
+                any(
+                    result.adoption_recommendation.label in message
+                    for message in visible_messages
+                )
+            )
+            metric_labels = {item.label for item in app.metric}
+            self.assertTrue(
+                {"Fold平均", "Fold標準偏差", "Worst Fold", "安定性品質"}
+                <= metric_labels
             )
         st.cache_data.clear()
 
