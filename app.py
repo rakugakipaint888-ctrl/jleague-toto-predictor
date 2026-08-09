@@ -17,6 +17,7 @@ ensure_version7b_model_config()
 ensure_version7b_model_pipeline()
 
 from analysis import render_analysis_tab
+from bet_optimization_ui import render_bet_optimization_tab
 from draw_analysis import render_draw_analysis_tab
 from draw_optimizer import load_active_draw_settings
 from draw_predictor import (
@@ -612,9 +613,13 @@ def create_average_input(
 
 st.title("⚽ Jリーグ toto予想")
 
-prediction_tab, analysis_tab, draw_analysis_tab, model_optimization_tab = st.tabs(
-    ["予想", "分析", "引分分析", "モデル最適化"]
-)
+(
+    prediction_tab,
+    analysis_tab,
+    draw_analysis_tab,
+    model_optimization_tab,
+    bet_optimization_tab,
+) = st.tabs(["予想", "分析", "引分分析", "モデル最適化", "買い目最適化"])
 
 with prediction_tab:
 
@@ -1631,6 +1636,9 @@ with prediction_tab:
             result_df = finalize_prediction_results(result_df)
 
             st.session_state["latest_prediction_results"] = result_df.copy()
+            st.session_state["latest_prediction_draw_threshold"] = (
+                draw_candidate_threshold_percent / 100.0
+            )
 
             if (
                 current_toto_round is not None
@@ -2042,4 +2050,12 @@ with model_optimization_tab:
     render_model_optimization_tab(
         history_manager=toto_history_manager,
         fallback_matches=match_data_result.completed_matches,
+    )
+
+
+with bet_optimization_tab:
+    render_bet_optimization_tab(
+        prediction_history_manager=prediction_history_manager,
+        history_manager=toto_history_manager,
+        active_draw_settings=active_draw_settings,
     )
