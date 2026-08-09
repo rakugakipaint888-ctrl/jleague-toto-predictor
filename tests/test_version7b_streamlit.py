@@ -176,6 +176,10 @@ class Version7BStreamlitTest(unittest.TestCase):
             )
             with partial_path.open(encoding="utf-8-sig") as partial_file:
                 self.assertEqual(sum(1 for _ in csv.DictReader(partial_file)), 10)
+            with (root / "partial_fold_metrics.csv").open(
+                encoding="utf-8-sig"
+            ) as fold_file:
+                self.assertEqual(sum(1 for _ in csv.DictReader(fold_file)), 10)
             with history_path.open(encoding="utf-8-sig") as history_file:
                 self.assertEqual(sum(1 for _ in csv.DictReader(history_file)), 1)
             with ranking_path.open(encoding="utf-8-sig") as ranking_file:
@@ -192,7 +196,14 @@ class Version7BStreamlitTest(unittest.TestCase):
             )
             metric_labels = {item.label for item in app.metric}
             self.assertTrue(
-                {"Fold平均", "Fold標準偏差", "Worst Fold", "安定性品質"}
+                {
+                    "Training Mean",
+                    "Robust Training",
+                    "Fold標準偏差",
+                    "Worst Fold",
+                    "安定性Penalty",
+                    "Optuna objective",
+                }
                 <= metric_labels
             )
         st.cache_data.clear()

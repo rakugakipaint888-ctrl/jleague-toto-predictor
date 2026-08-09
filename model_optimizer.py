@@ -25,6 +25,7 @@ from version7b_config import (
     VERSION7B_OVERFIT_THRESHOLDS,
     VERSION7B_RANDOM_SEED,
     VERSION7B_RANKING_LIMIT,
+    VERSION7B_ROBUST_SELECTION_SETTINGS,
 )
 from version7b_runtime import ensure_version7b_model_call_path
 from backtest import (
@@ -81,6 +82,9 @@ DEFAULT_OPTIMIZATION_HISTORY_PATH = (
 )
 DEFAULT_MODEL_RANKING_PATH = (
     PROJECT_ROOT / "data" / "history" / "version7b_model_ranking.csv"
+)
+DEFAULT_FOLD_METRICS_PATH = (
+    PROJECT_ROOT / "data" / "history" / "version7b_fold_metrics.csv"
 )
 
 OPTUNA_SEARCH = "optuna"
@@ -160,6 +164,10 @@ class ModelOptimizationDataset:
         return sum(
             item.match_count(self.target_league) for item in self.validation_rounds
         )
+
+    @property
+    def fold_count(self) -> int:
+        return len(self.split.folds)
 
     @property
     def training_period(self) -> str:
@@ -245,9 +253,21 @@ class TrialRecord:
 
     @property
     def walk_forward_score(self) -> float:
-        """旧CSV名raw_validation_scoreと互換のTraining内評価Score。"""
+        """旧公開名と互換のRobust Training Score。"""
 
         return self.raw_validation_score
+
+    @property
+    def robust_training_score(self) -> float:
+        return self.raw_validation_score
+
+    @property
+    def objective_value(self) -> float:
+        return self.selection_score
+
+    @property
+    def training_mean_score(self) -> Optional[float]:
+        return self.selection_validation.fold_mean_score
 
     @property
     def fold_mean_score(self) -> Optional[float]:
@@ -260,6 +280,26 @@ class TrialRecord:
     @property
     def worst_fold_score(self) -> Optional[float]:
         return self.selection_validation.worst_fold_score
+
+    @property
+    def worst_fold_gap(self) -> Optional[float]:
+        return self.selection_validation.worst_fold_gap
+
+    @property
+    def fold_count(self) -> int:
+        return self.selection_validation.fold_count
+
+    @property
+    def stability_penalty(self) -> float:
+        return self.selection_validation.stability_penalty
+
+    @property
+    def draw_degradation_penalty(self) -> float:
+        return self.draw_degradation.penalty
+
+    @property
+    def stability_label(self) -> str:
+        return self.selection_validation.stability_label
 
 
 @dataclass(frozen=True)
@@ -297,14 +337,19 @@ class TrialProgress:
 
     @property
     def best_walk_forward_score(self) -> float:
-        """旧公開名best_validation_scoreを維持した意味明示用alias。"""
+        """旧公開名best_validation_scoreを維持した互換alias。"""
 
+        return self.best_validation_score
+
+    @property
+    def best_robust_training_score(self) -> float:
         return self.best_validation_score
 
 
 @dataclass(frozen=True)
 class OptimizationResult:
     run_id: str
+    configuration_id: str
     started_at: datetime
     completed_at: datetime
     configuration: SearchConfiguration
@@ -500,6 +545,15 @@ def prepare_model_dataset(
         raise ModelOptimizationError(
             "Validationが0試合です。対象リーグを確認してください。"
         )
+    for index, fold in enumerate(dataset.split.folds, start=1):
+        fold_match_count = sum(
+            item.match_count(target_league) for item in fold.validation_rounds
+        )
+        if fold_match_count <= 0:
+            raise ModelOptimizationError(
+                f"Training内部Walk ForwardのFold {index}（{fold.label}）が"
+                "評価試合0件です。対象リーグまたは期間を確認してください。"
+            )
     return dataset
 
 
@@ -895,26 +949,56 @@ def _parameter_signature(parameters: Version7BParameters) -> str:
     )
 
 
-def _run_id(
-    dataset: ModelOptimizationDataset, configuration: SearchConfiguration
-) -> str:
-    payload = {
+def _configuration_payload(
+    dataset: ModelOptimizationDataset,
+    configuration: SearchConfiguration,
+) -> dict[str, Any]:
+    return {
+        "selection_logic": "version7b_robust_v2",
         "period": dataset.actual_period,
         "training": dataset.training_period,
         "validation": dataset.validation_period,
+        "training_round_ids": [item.round_id for item in dataset.training_rounds],
+        "final_validation_round_ids": [
+            item.round_id for item in dataset.validation_rounds
+        ],
+        "fold_validation_round_ids": [
+            [item.round_id for item in fold.validation_rounds]
+            for fold in dataset.split.folds
+        ],
+        "training_match_count": dataset.training_match_count,
+        "final_validation_match_count": dataset.validation_match_count,
         "league": dataset.target_league,
         "method": configuration.method,
         "trials": configuration.trial_count,
         "seed": configuration.random_seed,
         "draw": configuration.include_draw_parameters,
         "weights": configuration.evaluation_weights.as_dict(),
+        "robust_selection": dict(VERSION7B_ROBUST_SELECTION_SETTINGS),
     }
+
+
+def _configuration_id(
+    dataset: ModelOptimizationDataset,
+    configuration: SearchConfiguration,
+) -> str:
+    payload = _configuration_payload(dataset, configuration)
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
     ).hexdigest()[:16]
 
 
-PARTIAL_TRIAL_COLUMNS = (
+def _run_id(configuration_id: str, started_at: datetime) -> str:
+    """同一条件の再実行も別履歴として残す一意な実行ID。"""
+
+    return (
+        started_at.astimezone(JAPAN_TIMEZONE).strftime("%Y%m%dT%H%M%S%f")
+        + "-"
+        + configuration_id
+    )
+
+
+LEGACY_PARTIAL_TRIAL_COLUMNS = (
     "run_id",
     "saved_at",
     "trial_number",
@@ -931,9 +1015,68 @@ PARTIAL_TRIAL_COLUMNS = (
     "parameters",
 )
 
+PARTIAL_TRIAL_COLUMNS = (
+    "run_id",
+    "configuration_id",
+    "saved_at",
+    "trial_number",
+    "search_stage",
+    "objective_value",
+    "robust_training_score",
+    "training_mean_score",
+    "fold_count",
+    "fold_score_standard_deviation",
+    "worst_fold_score",
+    "worst_fold_gap",
+    "stability_quality",
+    "stability_penalty",
+    "draw_degradation_penalty",
+    # 旧列名は既存CSV・外部分析との互換性のため残す。
+    "selection_score",
+    "raw_validation_score",
+    "training_score",
+    "brier_score",
+    "log_loss",
+    "calibration",
+    "accuracy",
+    "class_accuracy_1",
+    "class_accuracy_0",
+    "class_accuracy_2",
+    "draw_f1",
+    "stability_label",
+    "draw_degradation",
+    "parameters",
+)
+
+
+def _migrate_csv_schema(
+    path: Path,
+    columns: tuple[str, ...],
+    legacy_columns: Sequence[tuple[str, ...]] = (),
+) -> bool:
+    """既存行を残したまま認識済み旧ヘッダーだけを新列へ移行する。"""
+
+    if not path.exists():
+        return False
+    with path.open("r", encoding="utf-8-sig", newline="") as csv_file:
+        reader = csv.DictReader(csv_file)
+        header = tuple(reader.fieldnames or ())
+        rows = list(reader)
+    if header == columns:
+        return True
+    if header not in tuple(legacy_columns):
+        raise ModelOptimizationError(f"{path.name}の列が壊れています。")
+    _write_csv_rows(
+        path,
+        columns,
+        tuple({key: row.get(key, "") for key in columns} for row in rows),
+    )
+    return True
+
 
 def save_partial_trial(
     run_id: str,
+    configuration_id: str,
     record: TrialRecord,
     path: Path = DEFAULT_PARTIAL_TRIALS_PATH,
 ) -> None:
@@ -941,15 +1084,11 @@ def save_partial_trial(
 
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        exists = path.exists()
-        if exists:
-            with path.open("r", encoding="utf-8-sig", newline="") as csv_file:
-                reader = csv.reader(csv_file)
-                header = tuple(next(reader, ()))
-            if header != PARTIAL_TRIAL_COLUMNS:
-                raise ModelOptimizationError(
-                    "Version7-B途中履歴CSVの列が壊れています。"
-                )
+        exists = _migrate_csv_schema(
+            path,
+            PARTIAL_TRIAL_COLUMNS,
+            (LEGACY_PARTIAL_TRIAL_COLUMNS,),
+        )
         with path.open(
             "a", encoding="utf-8-sig" if not exists else "utf-8", newline=""
         ) as csv_file:
@@ -964,9 +1103,26 @@ def save_partial_trial(
             writer.writerow(
                 {
                     "run_id": run_id,
+                    "configuration_id": configuration_id,
                     "saved_at": datetime.now(JAPAN_TIMEZONE).isoformat(),
                     "trial_number": record.trial_number,
                     "search_stage": record.search_stage,
+                    "objective_value": record.objective_value,
+                    "robust_training_score": record.robust_training_score,
+                    "training_mean_score": record.training_mean_score,
+                    "fold_count": record.fold_count,
+                    "fold_score_standard_deviation": (
+                        record.fold_score_standard_deviation
+                    ),
+                    "worst_fold_score": record.worst_fold_score,
+                    "worst_fold_gap": record.worst_fold_gap,
+                    "stability_quality": (
+                        record.selection_validation.stability_quality
+                    ),
+                    "stability_penalty": record.stability_penalty,
+                    "draw_degradation_penalty": (
+                        record.draw_degradation_penalty
+                    ),
                     "selection_score": record.selection_score,
                     "raw_validation_score": record.raw_validation_score,
                     "training_score": record.training.score,
@@ -974,7 +1130,11 @@ def save_partial_trial(
                     "log_loss": metrics.log_loss,
                     "calibration": metrics.calibration_error,
                     "accuracy": metrics.accuracy,
+                    "class_accuracy_1": metrics.class_accuracy["1"],
+                    "class_accuracy_0": metrics.class_accuracy["0"],
+                    "class_accuracy_2": metrics.class_accuracy["2"],
                     "draw_f1": record.selection_validation.draw.f1_score,
+                    "stability_label": record.stability_label,
                     "draw_degradation": record.draw_degradation.label,
                     "parameters": _parameter_signature(record.parameters),
                 }
@@ -986,6 +1146,103 @@ def save_partial_trial(
     except (OSError, UnicodeError, csv.Error, TypeError, ValueError) as error:
         raise ModelOptimizationError(
             f"途中Trialを保存できませんでした: {error}"
+        ) from error
+
+
+FOLD_METRIC_COLUMNS = (
+    "run_id",
+    "configuration_id",
+    "saved_at",
+    "trial_number",
+    "search_stage",
+    "fold_number",
+    "fold_label",
+    "period",
+    "round_count",
+    "match_count",
+    "fold_score",
+    "brier_score",
+    "log_loss",
+    "calibration",
+    "accuracy",
+    "class_accuracy_1",
+    "class_accuracy_0",
+    "class_accuracy_2",
+    "draw_precision",
+    "draw_recall",
+    "draw_f1",
+    "parameters",
+)
+
+
+def save_trial_fold_metrics(
+    run_id: str,
+    configuration_id: str,
+    record: TrialRecord,
+    fold_definitions: Sequence[Any],
+    path: Path = DEFAULT_FOLD_METRICS_PATH,
+) -> None:
+    """全Trialの各Fold指標を逐次保存し、選定理由を後から再現可能にする。"""
+
+    evaluations = record.selection_validation.fold_evaluations
+    if len(evaluations) != len(fold_definitions):
+        raise ModelOptimizationError(
+            "Walk Forward Fold定義と評価結果の件数が一致しません。"
+        )
+    saved_at = datetime.now(JAPAN_TIMEZONE).isoformat()
+    rows = []
+    for index, (definition, evaluation) in enumerate(
+        zip(fold_definitions, evaluations), start=1
+    ):
+        metrics = evaluation.metrics
+        draw = evaluation.draw
+        rows.append(
+            {
+                "run_id": run_id,
+                "configuration_id": configuration_id,
+                "saved_at": saved_at,
+                "trial_number": record.trial_number,
+                "search_stage": record.search_stage,
+                "fold_number": index,
+                "fold_label": getattr(definition, "label", f"Fold {index}"),
+                "period": evaluation.period,
+                "round_count": evaluation.round_count,
+                "match_count": metrics.match_count,
+                "fold_score": evaluation.score,
+                "brier_score": metrics.brier_score,
+                "log_loss": metrics.log_loss,
+                "calibration": metrics.calibration_error,
+                "accuracy": metrics.accuracy,
+                "class_accuracy_1": metrics.class_accuracy["1"],
+                "class_accuracy_0": metrics.class_accuracy["0"],
+                "class_accuracy_2": metrics.class_accuracy["2"],
+                "draw_precision": draw.precision,
+                "draw_recall": draw.recall,
+                "draw_f1": draw.f1_score,
+                "parameters": _parameter_signature(record.parameters),
+            }
+        )
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        exists = _migrate_csv_schema(path, FOLD_METRIC_COLUMNS)
+        with path.open(
+            "a", encoding="utf-8-sig" if not exists else "utf-8", newline=""
+        ) as csv_file:
+            writer = csv.DictWriter(
+                csv_file,
+                fieldnames=FOLD_METRIC_COLUMNS,
+                lineterminator="\n",
+            )
+            if not exists:
+                writer.writeheader()
+            writer.writerows(rows)
+            csv_file.flush()
+            os.fsync(csv_file.fileno())
+    except ModelOptimizationError:
+        raise
+    except (OSError, UnicodeError, csv.Error, TypeError, ValueError) as error:
+        raise ModelOptimizationError(
+            f"Fold指標を保存できませんでした: {error}"
         ) from error
 
 
@@ -1027,6 +1284,24 @@ def _evaluate_trial(
         selection_score=max(0.0, selection.score - degradation.penalty),
         draw_degradation=degradation,
         duration_seconds=time.monotonic() - started,
+    )
+
+
+def _trial_ranking_key(record: TrialRecord) -> tuple[float, ...]:
+    """Training内部指標だけで最終順位を決める決定論的キー。"""
+
+    return (
+        record.objective_value,
+        record.worst_fold_score
+        if record.worst_fold_score is not None
+        else -math.inf,
+        -(
+            record.fold_score_standard_deviation
+            if record.fold_score_standard_deviation is not None
+            else math.inf
+        ),
+        -(record.selection_validation.metrics.brier_score or 2.0),
+        -record.trial_number,
     )
 
 
@@ -1078,6 +1353,7 @@ def run_model_optimization(
     progress_callback: Optional[ProgressCallback] = None,
     should_stop: Optional[StopCallback] = None,
     partial_path: Path = DEFAULT_PARTIAL_TRIALS_PATH,
+    fold_metrics_path: Optional[Path] = None,
 ) -> OptimizationResult:
     """探索内Validationで順位を確定し、最終Validationはその後だけ評価する。"""
 
@@ -1104,8 +1380,14 @@ def run_model_optimization(
         weights=configuration.evaluation_weights,
         fold_validation_rounds=fold_groups,
     )
-    run_id = _run_id(dataset, configuration)
     started_at = datetime.now(JAPAN_TIMEZONE)
+    configuration_id = _configuration_id(dataset, configuration)
+    run_id = _run_id(configuration_id, started_at)
+    resolved_fold_metrics_path = fold_metrics_path or (
+        DEFAULT_FOLD_METRICS_PATH
+        if partial_path == DEFAULT_PARTIAL_TRIALS_PATH
+        else partial_path.with_name(partial_path.stem + "_fold_metrics.csv")
+    )
     monotonic_started = time.monotonic()
     records: list[TrialRecord] = []
     signatures: set[str] = set()
@@ -1126,8 +1408,15 @@ def run_model_optimization(
         )
         records.append(record)
         signatures.add(signature)
-        save_partial_trial(run_id, record, partial_path)
-        best = max(records, key=lambda item: item.selection_score)
+        save_partial_trial(run_id, configuration_id, record, partial_path)
+        save_trial_fold_metrics(
+            run_id,
+            configuration_id,
+            record,
+            dataset.split.folds,
+            resolved_fold_metrics_path,
+        )
+        best = max(records, key=_trial_ranking_key)
         if progress_callback is not None:
             progress_callback(
                 TrialProgress(
@@ -1193,9 +1482,7 @@ def run_model_optimization(
             configuration.method == TWO_STAGE_SEARCH
             and len(records) < plan.executable_models
         ):
-            top = sorted(records, key=lambda item: item.selection_score, reverse=True)[
-                :3
-            ]
+            top = sorted(records, key=_trial_ranking_key, reverse=True)[:3]
             refine_fields = (
                 "home_correction",
                 "elo_correction_rate",
@@ -1256,25 +1543,7 @@ def run_model_optimization(
 
     if not records:
         raise ModelOptimizationError("正常に完了した探索モデルがありません。")
-    ordered = tuple(
-        sorted(
-            records,
-            key=lambda item: (
-                item.selection_score,
-                item.worst_fold_score
-                if item.worst_fold_score is not None
-                else -math.inf,
-                -(
-                    item.fold_score_standard_deviation
-                    if item.fold_score_standard_deviation is not None
-                    else math.inf
-                ),
-                -(item.selection_validation.metrics.brier_score or 2.0),
-                -item.trial_number,
-            ),
-            reverse=True,
-        )
-    )
+    ordered = tuple(sorted(records, key=_trial_ranking_key, reverse=True))
     # この時点でTraining内Walk Forwardだけを使った順位とBestを確定する。
     # 最終Validationは順位・Optuna objective・パラメータ選択へ戻さない。
     selected_best = ordered[0]
@@ -1313,6 +1582,7 @@ def run_model_optimization(
     completed_at = datetime.now(JAPAN_TIMEZONE)
     return OptimizationResult(
         run_id=run_id,
+        configuration_id=configuration_id,
         started_at=started_at,
         completed_at=completed_at,
         configuration=configuration,
@@ -1335,7 +1605,7 @@ def run_model_optimization(
     )
 
 
-OPTIMIZATION_HISTORY_COLUMNS = (
+LEGACY_OPTIMIZATION_HISTORY_COLUMNS = (
     "run_id",
     "executed_at",
     "version",
@@ -1370,7 +1640,56 @@ OPTIMIZATION_HISTORY_COLUMNS = (
     "adopted",
 )
 
-MODEL_RANKING_COLUMNS = (
+OPTIMIZATION_HISTORY_COLUMNS = (
+    "run_id",
+    "configuration_id",
+    "executed_at",
+    "version",
+    "search_method",
+    "trial_count",
+    "explored_models",
+    "random_seed",
+    "requested_period",
+    "actual_period",
+    "target_league",
+    "validation_method",
+    "training_period",
+    "validation_period",
+    "training_match_count",
+    "validation_match_count",
+    "fold_count",
+    "evaluation_weights",
+    "robust_selection_settings",
+    "include_draw_parameters",
+    "best_training_mean_score",
+    "best_robust_training_score",
+    "best_objective_value",
+    "best_fold_score_standard_deviation",
+    "best_worst_fold_score",
+    "best_worst_fold_gap",
+    "best_stability_quality",
+    "best_stability_penalty",
+    "best_draw_degradation_penalty",
+    "best_stability_label",
+    # 旧列は外部分析互換のため維持する。
+    "best_score",
+    "best_validation_score",
+    "brier_score",
+    "log_loss",
+    "calibration",
+    "accuracy",
+    "draw_precision",
+    "draw_recall",
+    "draw_f1",
+    "draw_brier",
+    "draw_calibration",
+    "overfitting",
+    "draw_degradation",
+    "best_parameters",
+    "adopted",
+)
+
+LEGACY_MODEL_RANKING_COLUMNS = (
     "run_id",
     "executed_at",
     "rank",
@@ -1396,16 +1715,66 @@ MODEL_RANKING_COLUMNS = (
     "parameters",
 )
 
+MODEL_RANKING_COLUMNS = (
+    "run_id",
+    "configuration_id",
+    "executed_at",
+    "rank",
+    "trial_number",
+    "search_stage",
+    "objective_value",
+    "robust_training_score",
+    "training_mean_score",
+    "fold_count",
+    "fold_score_standard_deviation",
+    "worst_fold_score",
+    "worst_fold_gap",
+    "stability_quality",
+    "stability_penalty",
+    "draw_degradation_penalty",
+    "stability_label",
+    # 旧列は外部分析互換のため維持する。
+    "score",
+    "validation_score",
+    "training_score",
+    "brier_score",
+    "log_loss",
+    "calibration",
+    "accuracy",
+    "class_accuracy_1",
+    "class_accuracy_0",
+    "class_accuracy_2",
+    "draw_precision",
+    "draw_recall",
+    "draw_f1",
+    "draw_brier",
+    "draw_calibration",
+    "prediction_share_1",
+    "prediction_share_0",
+    "prediction_share_2",
+    "overfitting",
+    "draw_degradation",
+    "parameters",
+)
 
-def _read_csv_rows(path: Path, columns: tuple[str, ...]) -> list[dict[str, str]]:
+
+def _read_csv_rows(
+    path: Path,
+    columns: tuple[str, ...],
+    legacy_columns: Sequence[tuple[str, ...]] = (),
+) -> list[dict[str, str]]:
     if not path.exists():
         return []
     try:
         with path.open("r", encoding="utf-8-sig", newline="") as csv_file:
             reader = csv.DictReader(csv_file)
-            if tuple(reader.fieldnames or ()) != columns:
+            header = tuple(reader.fieldnames or ())
+            if header != columns and header not in tuple(legacy_columns):
                 raise ModelOptimizationError(f"{path.name}の列が壊れています。")
-            return list(reader)
+            return [
+                {key: row.get(key, "") for key in columns}
+                for row in reader
+            ]
     except ModelOptimizationError:
         raise
     except (OSError, UnicodeError, csv.Error) as error:
@@ -1437,6 +1806,7 @@ def _history_row(result: OptimizationResult, adopted: bool) -> dict[str, Any]:
     draw = evaluation.draw
     return {
         "run_id": result.run_id,
+        "configuration_id": result.configuration_id,
         "executed_at": result.completed_at.isoformat(),
         "version": VERSION7B_MODEL_VERSION,
         "search_method": result.configuration.method,
@@ -1451,12 +1821,34 @@ def _history_row(result: OptimizationResult, adopted: bool) -> dict[str, Any]:
         "validation_period": result.dataset.validation_period,
         "training_match_count": result.dataset.training_match_count,
         "validation_match_count": result.dataset.validation_match_count,
+        "fold_count": result.dataset.fold_count,
         "evaluation_weights": json.dumps(
             result.configuration.evaluation_weights.as_dict(),
             ensure_ascii=False,
             sort_keys=True,
         ),
+        "robust_selection_settings": json.dumps(
+            VERSION7B_ROBUST_SELECTION_SETTINGS,
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
         "include_draw_parameters": result.configuration.include_draw_parameters,
+        "best_training_mean_score": result.ranking[0].training_mean_score,
+        "best_robust_training_score": result.ranking[0].robust_training_score,
+        "best_objective_value": result.ranking[0].objective_value,
+        "best_fold_score_standard_deviation": (
+            result.ranking[0].fold_score_standard_deviation
+        ),
+        "best_worst_fold_score": result.ranking[0].worst_fold_score,
+        "best_worst_fold_gap": result.ranking[0].worst_fold_gap,
+        "best_stability_quality": (
+            result.ranking[0].selection_validation.stability_quality
+        ),
+        "best_stability_penalty": result.ranking[0].stability_penalty,
+        "best_draw_degradation_penalty": (
+            result.ranking[0].draw_degradation_penalty
+        ),
+        "best_stability_label": result.ranking[0].stability_label,
         "best_score": result.best_score,
         "best_validation_score": result.best_validation_score,
         "brier_score": metrics.brier_score,
@@ -1483,7 +1875,11 @@ def save_optimization_history(
 ) -> bool:
     """1実行1行で保存し、同一run_idの再保存は安全に置換する。"""
 
-    rows = _read_csv_rows(path, OPTIMIZATION_HISTORY_COLUMNS)
+    rows = _read_csv_rows(
+        path,
+        OPTIMIZATION_HISTORY_COLUMNS,
+        (LEGACY_OPTIMIZATION_HISTORY_COLUMNS,),
+    )
     rows = [row for row in rows if row.get("run_id") != result.run_id]
     rows.append(_history_row(result, adopted))
     _write_csv_rows(path, OPTIMIZATION_HISTORY_COLUMNS, rows)
@@ -1495,7 +1891,11 @@ def mark_optimization_adopted(
     *,
     path: Path = DEFAULT_OPTIMIZATION_HISTORY_PATH,
 ) -> bool:
-    rows = _read_csv_rows(path, OPTIMIZATION_HISTORY_COLUMNS)
+    rows = _read_csv_rows(
+        path,
+        OPTIMIZATION_HISTORY_COLUMNS,
+        (LEGACY_OPTIMIZATION_HISTORY_COLUMNS,),
+    )
     found = False
     for row in rows:
         if row.get("run_id") == str(run_id):
@@ -1512,7 +1912,13 @@ def load_optimization_history(
 ) -> tuple[dict[str, str], ...]:
     """過去のVersion7-B実行を画面から確認できる形で安全に読み込む。"""
 
-    return tuple(_read_csv_rows(path, OPTIMIZATION_HISTORY_COLUMNS))
+    return tuple(
+        _read_csv_rows(
+            path,
+            OPTIMIZATION_HISTORY_COLUMNS,
+            (LEGACY_OPTIMIZATION_HISTORY_COLUMNS,),
+        )
+    )
 
 
 def save_model_ranking(
@@ -1521,7 +1927,11 @@ def save_model_ranking(
 ) -> bool:
     """Training内Walk Forward上位20モデルを保存する。"""
 
-    rows = _read_csv_rows(path, MODEL_RANKING_COLUMNS)
+    rows = _read_csv_rows(
+        path,
+        MODEL_RANKING_COLUMNS,
+        (LEGACY_MODEL_RANKING_COLUMNS,),
+    )
     rows = [row for row in rows if row.get("run_id") != result.run_id]
     for rank, record in enumerate(result.ranking, start=1):
         # ランキング指標は全行でTraining内Walk Forwardへ統一する。
@@ -1533,10 +1943,26 @@ def save_model_ranking(
         rows.append(
             {
                 "run_id": result.run_id,
+                "configuration_id": result.configuration_id,
                 "executed_at": result.completed_at.isoformat(),
                 "rank": rank,
                 "trial_number": record.trial_number,
                 "search_stage": record.search_stage,
+                "objective_value": record.objective_value,
+                "robust_training_score": record.robust_training_score,
+                "training_mean_score": record.training_mean_score,
+                "fold_count": record.fold_count,
+                "fold_score_standard_deviation": (
+                    record.fold_score_standard_deviation
+                ),
+                "worst_fold_score": record.worst_fold_score,
+                "worst_fold_gap": record.worst_fold_gap,
+                "stability_quality": selection.stability_quality,
+                "stability_penalty": record.stability_penalty,
+                "draw_degradation_penalty": (
+                    record.draw_degradation_penalty
+                ),
+                "stability_label": record.stability_label,
                 "score": record.selection_score,
                 "validation_score": (
                     record.final_validation.score if is_best else ""
@@ -1546,6 +1972,9 @@ def save_model_ranking(
                 "log_loss": metrics.log_loss,
                 "calibration": metrics.calibration_error,
                 "accuracy": metrics.accuracy,
+                "class_accuracy_1": metrics.class_accuracy["1"],
+                "class_accuracy_0": metrics.class_accuracy["0"],
+                "class_accuracy_2": metrics.class_accuracy["2"],
                 "draw_precision": draw.precision,
                 "draw_recall": draw.recall,
                 "draw_f1": draw.f1_score,

@@ -12,6 +12,7 @@ from version7b_config import (
     VERSION7B_DEFAULT_EVALUATION_WEIGHTS,
     VERSION7B_DRAW_DEGRADATION_TOLERANCES,
     VERSION7B_OVERFIT_THRESHOLDS,
+    VERSION7B_ROBUST_SELECTION_SETTINGS,
 )
 from draw_evaluation import DrawEvaluation, evaluate_draw_predictions
 
@@ -98,12 +99,42 @@ class PredictionRow:
 
 
 @dataclass(frozen=True)
+class FoldEvaluation:
+    """Training内部Walk Forwardの1 Foldを監査可能な形で保持する。"""
+
+    score: float
+    draw_evaluation: DrawEvaluation
+    rows: tuple[PredictionRow, ...]
+
+    @property
+    def metrics(self):
+        return self.draw_evaluation.overall
+
+    @property
+    def draw(self):
+        return self.draw_evaluation.draw
+
+    @property
+    def period(self) -> str:
+        if not self.rows:
+            return "確認できません"
+        dates = sorted(row.cutoff_at.date() for row in self.rows)
+        return f"{dates[0].isoformat()}～{dates[-1].isoformat()}"
+
+    @property
+    def round_count(self) -> int:
+        return len({row.round_id for row in self.rows})
+
+
+@dataclass(frozen=True)
 class CandidateEvaluation:
     score: float
     draw_evaluation: DrawEvaluation
     component_scores: Mapping[str, float]
     fold_scores: tuple[float, ...]
+    fold_evaluations: tuple[FoldEvaluation, ...]
     stability_quality: float
+    stability_penalty: float
     rows: tuple[PredictionRow, ...]
     roi: Optional[float] = None
 
@@ -134,6 +165,30 @@ class CandidateEvaluation:
     @property
     def worst_fold_score(self) -> Optional[float]:
         return min(self.fold_scores) if self.fold_scores else None
+
+    @property
+    def fold_count(self) -> int:
+        return len(self.fold_scores)
+
+    @property
+    def worst_fold_gap(self) -> Optional[float]:
+        if self.fold_mean_score is None or self.worst_fold_score is None:
+            return None
+        return max(0.0, self.fold_mean_score - self.worst_fold_score)
+
+    @property
+    def stability_label(self) -> str:
+        settings = VERSION7B_ROBUST_SELECTION_SETTINGS
+        if self.fold_count < int(settings["minimum_stability_folds"]):
+            return f"安定性判定不可（{self.fold_count} Fold）"
+        if (
+            float(self.fold_score_standard_deviation or 0.0)
+            > float(settings["standard_deviation_warning"])
+            or float(self.worst_fold_gap or 0.0)
+            > float(settings["worst_fold_gap_warning"])
+        ):
+            return "特定期間依存の可能性"
+        return "安定性良好"
 
 
 @dataclass(frozen=True)
@@ -262,24 +317,67 @@ def _performance_score(
 def stability_quality(
     fold_scores: Sequence[float],
     reference_score: Optional[float] = None,
+    settings: Mapping[str, float] = VERSION7B_ROBUST_SELECTION_SETTINGS,
 ) -> float:
     """Fold間ばらつきとWorst Foldの落ち込みを0～1へ変換する。"""
 
     finite_scores = [float(value) for value in fold_scores if math.isfinite(value)]
     if not finite_scores:
         return 0.0
+    standard_deviation_scale = float(settings["standard_deviation_scale"])
+    worst_fold_gap_scale = float(settings["worst_fold_gap_scale"])
+    minimum_folds = int(settings["minimum_stability_folds"])
+    if standard_deviation_scale <= 0 or worst_fold_gap_scale <= 0:
+        raise ValueError("安定性Scoreの尺度は0より大きくしてください。")
+    # 1 Foldでは期間間のばらつきを観測できない。ペナルティは付けず、
+    # CandidateEvaluation.stability_labelで判定不能と明示する。
+    if len(finite_scores) < minimum_folds:
+        return 1.0
     standard_deviation = (
         statistics.pstdev(finite_scores) if len(finite_scores) >= 2 else 0.0
     )
     mean_score = statistics.fmean(finite_scores)
     worst_fold_gap = max(0.0, mean_score - min(finite_scores))
-    optimistic_gap = max(0.0, float(reference_score or mean_score) - mean_score)
     return _clamp01(
         1.0
-        - standard_deviation / 20.0
-        - worst_fold_gap / 40.0
-        - optimistic_gap / 50.0
+        - standard_deviation / standard_deviation_scale
+        - worst_fold_gap / worst_fold_gap_scale
     )
+
+
+def robust_training_score(
+    fold_scores: Sequence[float],
+    weights: EvaluationWeights = DEFAULT_EVALUATION_WEIGHTS,
+    settings: Mapping[str, float] = VERSION7B_ROBUST_SELECTION_SETTINGS,
+) -> float:
+    """Fold平均と安定性だけで構成するTraining内の選定前Score。"""
+
+    finite_scores = [float(value) for value in fold_scores if math.isfinite(value)]
+    if not finite_scores:
+        raise ValueError("Robust Training Scoreには1 Fold以上必要です。")
+    normalized = weights.normalized()
+    stability_weight = normalized["validation_stability"]
+    performance_weight = 1.0 - stability_weight
+    quality = stability_quality(finite_scores, settings=settings)
+    return _clamp01(
+        (
+            performance_weight * statistics.fmean(finite_scores)
+            + 100.0 * stability_weight * quality
+        )
+        / 100.0
+    ) * 100.0
+
+
+def stability_penalty(
+    fold_scores: Sequence[float],
+    weights: EvaluationWeights = DEFAULT_EVALUATION_WEIGHTS,
+    settings: Mapping[str, float] = VERSION7B_ROBUST_SELECTION_SETTINGS,
+) -> float:
+    """完全安定時の寄与から失うScore点を返す。"""
+
+    normalized = weights.normalized()
+    quality = stability_quality(fold_scores, settings=settings)
+    return 100.0 * normalized["validation_stability"] * (1.0 - quality)
 
 
 def evaluate_candidate_rows(
@@ -292,17 +390,24 @@ def evaluate_candidate_rows(
     """単位の異なる生指標を正規化し、0～100の総合Scoreへ変換する。"""
 
     evaluation = _draw_evaluation(rows)
-    fold_evaluations = tuple(_draw_evaluation(fold) for fold in fold_rows if fold)
-    folds = tuple(
-        _performance_score(fold_evaluation, weights)
-        for fold_evaluation in fold_evaluations
+    if fold_rows and any(not fold for fold in fold_rows):
+        raise ValueError("Training内部Walk Forwardに評価試合0件のFoldがあります。")
+    fold_draw_evaluations = tuple(_draw_evaluation(fold) for fold in fold_rows)
+    fold_evaluations = tuple(
+        FoldEvaluation(
+            score=_performance_score(fold_evaluation, weights),
+            draw_evaluation=fold_evaluation,
+            rows=tuple(fold_rows[index]),
+        )
+        for index, fold_evaluation in enumerate(fold_draw_evaluations)
     )
+    folds = tuple(item.score for item in fold_evaluations)
     quality = stability_quality(folds) if fold_evaluations else 1.0
     if fold_evaluations:
         # 各期間を同じ1 Foldとして平均する。開催回・試合数の多い期間が
         # 探索Scoreを支配しないよう、連結行の指標は表示用にだけ保持する。
         fold_components = tuple(
-            _component_scores(fold_evaluation, 1.0)
+            _component_scores(fold_evaluation.draw_evaluation, 1.0)
             for fold_evaluation in fold_evaluations
         )
         components = {
@@ -312,12 +417,21 @@ def evaluate_candidate_rows(
         components["validation_stability"] = quality
     else:
         components = _component_scores(evaluation, quality)
+    score = (
+        robust_training_score(folds, weights)
+        if fold_evaluations
+        else _score_from_components(components, weights)
+    )
     return CandidateEvaluation(
-        score=_score_from_components(components, weights),
+        score=score,
         draw_evaluation=evaluation,
         component_scores=components,
         fold_scores=folds,
+        fold_evaluations=fold_evaluations,
         stability_quality=quality,
+        stability_penalty=(
+            stability_penalty(folds, weights) if fold_evaluations else 0.0
+        ),
         rows=tuple(rows),
         roi=roi,
     )

@@ -163,11 +163,16 @@ def ranking_frame(result: OptimizationResult) -> pd.DataFrame:
             {
                 "順位": rank,
                 "Trial": record.trial_number,
-                "選定Score": record.selection_score,
-                "WF統合Score": record.walk_forward_score,
-                "WF平均Score": record.fold_mean_score,
+                "Optuna objective": record.objective_value,
+                "Robust Training Score": record.robust_training_score,
+                "Training Mean Score": record.training_mean_score,
+                "Fold数": record.fold_count,
                 "WF標準偏差": record.fold_score_standard_deviation,
                 "Worst Fold Score": record.worst_fold_score,
+                "Mean−Worst": record.worst_fold_gap,
+                "安定性ペナルティ": record.stability_penalty,
+                "引分悪化ペナルティ": record.draw_degradation_penalty,
+                "安定性判定": record.stability_label,
                 "最終Validation Score": (
                     record.final_validation.score if is_best else None
                 ),
@@ -176,6 +181,9 @@ def ranking_frame(result: OptimizationResult) -> pd.DataFrame:
                 "Log Loss": metrics.log_loss,
                 "Calibration": metrics.calibration_error,
                 "全体的中率": metrics.accuracy,
+                "1的中率": metrics.class_accuracy["1"],
+                "0的中率": metrics.class_accuracy["0"],
+                "2的中率": metrics.class_accuracy["2"],
                 "引分Precision": draw.precision,
                 "引分Recall": draw.recall,
                 "引分F1": draw.f1_score,
@@ -210,11 +218,15 @@ def trial_metrics_frame(result: OptimizationResult) -> pd.DataFrame:
         rows.append(
             {
                 "Trial": record.trial_number,
-                "総合Score": record.selection_score,
-                "Walk Forward Score": record.walk_forward_score,
-                "WF平均Score": record.fold_mean_score,
+                "Optuna objective": record.objective_value,
+                "Robust Training Score": record.robust_training_score,
+                "Training Mean Score": record.training_mean_score,
+                "Fold数": record.fold_count,
                 "WF標準偏差": record.fold_score_standard_deviation,
                 "Worst Fold Score": record.worst_fold_score,
+                "Mean−Worst": record.worst_fold_gap,
+                "安定性ペナルティ": record.stability_penalty,
+                "引分悪化ペナルティ": record.draw_degradation_penalty,
                 "Training全体Score": record.training.score,
                 "Brier Score": metrics.brier_score,
                 "Log Loss": metrics.log_loss,
@@ -227,16 +239,74 @@ def trial_metrics_frame(result: OptimizationResult) -> pd.DataFrame:
 
 
 def walk_forward_stability_frame(result: OptimizationResult) -> pd.DataFrame:
-    """Best選定に使ったTraining内Fold Scoreだけを表示する。"""
+    """Best選定に使ったTraining内Foldの期間・全指標を表示する。"""
 
     labels = tuple(fold.label for fold in result.dataset.split.folds)
-    scores = result.best_selection_validation.fold_scores
     return pd.DataFrame(
         [
-            {"Fold": label, "Score": score}
-            for label, score in zip(labels, scores)
+            _fold_metric_row(
+                trial_number=result.ranking[0].trial_number,
+                fold_number=index,
+                label=label,
+                evaluation=evaluation,
+            )
+            for index, (label, evaluation) in enumerate(
+                zip(labels, result.best_selection_validation.fold_evaluations),
+                start=1,
+            )
         ]
     )
+
+
+def _fold_metric_row(
+    *,
+    trial_number: int,
+    fold_number: int,
+    label: str,
+    evaluation,
+) -> dict[str, Any]:
+    metrics = evaluation.metrics
+    draw = evaluation.draw
+    return {
+        "Trial": trial_number,
+        "Fold番号": fold_number,
+        "Fold": label,
+        "対象期間": evaluation.period,
+        "開催回数": evaluation.round_count,
+        "試合数": metrics.match_count,
+        "総合Score": evaluation.score,
+        "Brier Score": metrics.brier_score,
+        "Log Loss": metrics.log_loss,
+        "Calibration": metrics.calibration_error,
+        "全体的中率": metrics.accuracy,
+        "1的中率": metrics.class_accuracy["1"],
+        "0的中率": metrics.class_accuracy["0"],
+        "2的中率": metrics.class_accuracy["2"],
+        "引分Precision": draw.precision,
+        "引分Recall": draw.recall,
+        "引分F1": draw.f1_score,
+    }
+
+
+def trial_fold_metrics_frame(result: OptimizationResult) -> pd.DataFrame:
+    """全Trial・全Training内部Foldをダウンロード可能な表へ変換する。"""
+
+    labels = tuple(fold.label for fold in result.dataset.split.folds)
+    rows = []
+    for record in sorted(result.all_trials, key=lambda item: item.trial_number):
+        for index, (label, evaluation) in enumerate(
+            zip(labels, record.selection_validation.fold_evaluations),
+            start=1,
+        ):
+            rows.append(
+                _fold_metric_row(
+                    trial_number=record.trial_number,
+                    fold_number=index,
+                    label=label,
+                    evaluation=evaluation,
+                )
+            )
+    return pd.DataFrame(rows)
 
 
 def parameter_importance_frame(result: OptimizationResult) -> pd.DataFrame:

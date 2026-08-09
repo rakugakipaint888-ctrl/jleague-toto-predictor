@@ -61,8 +61,11 @@ Version6～Version7-Bは`data/cache/`、`data/history/`、`data/config/`を
 - `../config/version7a_draw_settings.json`：画面でYESを選んだ場合だけ更新する
   Version7-A採用済み引分設定
 - `../config/version7a_backups/`：採用直前の設定を復元するJSONバックアップ
-- `../history/version7b_partial_trials.csv`：Version7-BのTrial完了ごとの途中結果
-- `../history/version7b_model_ranking.csv`：Training内Walk Forward順の上位20モデル
+- `../history/version7b_partial_trials.csv`：Version7-BのTrial完了ごとのobjective、
+  Training Mean、Robust Training、安定性・引分ペナルティ
+- `../history/version7b_fold_metrics.csv`：全Trial・全Training内部Foldの期間、
+  試合数、Score、Brier、Log Loss、Calibration、的中率、1／0／2、引分指標
+- `../history/version7b_model_ranking.csv`：Training内Optuna objective順の上位20モデル
 - `../history/version7b_optimization_history.csv`：探索方式、期間、seed、重み、
   Training／Validation指標、最適係数、判定、採用有無
 - `../config/version7b_model_settings.json`：画面でYESを選んだ場合だけ更新する
@@ -150,3 +153,8 @@ Version7-Aの引分設定をそのまま参照します。
 残りだけを自動再開する機能はありません。CSV列が破損している場合は上書きせず、
 画面へエラーを表示します。ROIは公式13試合・結果・必要な配当を確認できる場合だけ
 保存し、不足データから推測しません。
+
+Run IDは実行ごとに一意で、同じ条件の再実行は共通の設定Fingerprintを持ちます。
+このため、同じ100 Trialを再実行しても旧実行を削除・置換しません。認識済みの旧列は
+既存行を保持したまま新列へ移行します。Final Validation列はTraining内で確定した
+Best Trialにだけ保存し、他TrialのFinal Validationは計算・保存しません。

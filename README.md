@@ -87,7 +87,9 @@ Trial数を増やしても性能向上は保証されません。候補数、開
 初期検証方式は「シーズン単位ウォークフォワード」です。固定Training／Validation
 分割、シーズン単位ウォークフォワード、開催回単位ウォークフォワードから選べます。
 探索順位はTraining内の時系列FoldのValidationで決めます。各Foldを同じ重みで平均し、
-Fold Scoreの標準偏差を安定性へ反映し、Worst Foldを同点時の優先順位に使います。
+Fold Scoreの標準偏差とMean−Worst差を安定性へ反映します。シーズン方式で利用可能な
+シーズンがN件なら、最新1シーズンをFinal Validation、最初の1シーズンを初期学習期間
+とし、Training内部Fold数はN−2件です。5シーズンなら3 Foldです。
 最終Validationは順位とBest Trialの確定後に、Version7-AとBest候補だけへ使用します。
 同じ試合をパラメータ選択と最終評価の両方には使いません。
 
@@ -99,7 +101,7 @@ Fold Scoreの標準偏差を安定性へ反映し、Worst Foldを同点時の優
 バックテスト期間は直近3／5／10シーズンまたは任意期間、対象リーグはJ1／J2／J3／
 全リーグです。初期値は直近5シーズン・全リーグです。保存・取得できたデータだけを
 使い、存在しない年は生成しません。画面には要求期間とは別に実際の使用期間、
-Training期間、Validation期間、試合数、データ不足リーグを表示します。3シーズン未満
+Training期間、Validation期間、試合数、実際のFold数、データ不足リーグを表示します。3シーズン未満
 ではシーズンウォークフォワードへ勝手に代替せず、成立条件と利用可能シーズンを
 エラー表示します。全リーグ選択時もJ1・J2・J3別のScoreを安定性表で確認できます。
 
@@ -128,23 +130,49 @@ Calibrationの増加が許容幅を超えると「引分性能悪化」とし、
 TrainingとValidationは、総合Score、Brier、Log Loss、Calibration、全体的中率、
 引分F1、引分Brier、引分Calibrationを別表示します。設定閾値を超える差は
 「過学習の可能性」と表示します。閾値は`VERSION7B_OVERFIT_THRESHOLDS`で管理します。
-最終候補ではTraining内Fold平均、Fold標準偏差、Worst Fold、安定性品質に加え、
+最終候補ではTraining Mean Score、Robust Training Score、Fold標準偏差、Worst Fold、
+Mean−Worst差、安定性ペナルティ、Training内引分悪化ペナルティ、Optuna objectiveに加え、
 Best決定後のシーズン別Score、リーグ別Score、Training／Validation差、Bootstrap
 信頼区間、Trial間のパラメータ重要度を確認できます。個別指標のFold分散は総合Scoreと
 二重評価になるため重ねず、Brier・Log Loss・的中率・引分性能を含むFold Scoreで
 安定性を評価します。
 
-安定性品質は`1 - Fold標準偏差/20 - (Fold平均 - Worst Fold)/40`を0～1へ
-丸めて算出します。選定Scoreは各FoldのBrier・Log Loss・Calibration・的中率・
-引分性能の品質を等重み平均し、設定された安定性重みを加え、最後にTraining内の
-引分性能悪化ペナルティを差し引いた値です。
+各FoldのBrier・Log Loss・Calibration・全体的中率・引分性能を0～100へ正規化した
+性能Scoreを算出し、試合数に関係なくFoldを等重みで平均した値を`Training Mean Score`
+とします。安定性品質Q、Robust Training Score R、Optuna objective Oは次です。
+
+```text
+Q = clamp(1 − Fold標準偏差 / 20 − (Training Mean − Worst Fold) / 40, 0, 1)
+R = (1 − 安定性重み) × Training Mean + 100 × 安定性重み × Q
+安定性Penalty = 100 × 安定性重み × (1 − Q)
+O = max(0, R − Training内引分悪化Penalty)
+```
+
+既定の安定性重み10%では、標準偏差とMean−Worst差の実質係数は0.5、0.25です。
+これは今回のFinal Validation結果から逆算した値ではなく、既存の安定性重み10%と
+Score尺度20点／40点から導かれます。尺度・警告閾値・安定性判定に必要な最小Fold数は
+`model_config.py`の`VERSION7B_ROBUST_SELECTION_SETTINGS`で管理します。
+
+1 Foldでは期間間の標準偏差を評価できないため安定性Penaltyは0点とし、画面には
+「安定性判定不可（1 Fold）」と表示します。評価試合0件のFoldは黙って除外せず、
+対象リーグまたは期間を確認するエラーで停止します。
+
+画面の`Training全体Score`はTraining全行を連結した参考値で、Optuna objectiveとは
+異なります。Best TrialはOの降順で決め、完全同点時だけWorst Foldの高い順、
+Fold標準偏差の小さい順、Brierの小さい順、Trial番号の小さい順を使います。
+Final ValidationのScore、過学習判定、Version7-A比較はこの順位条件に含めません。
 
 ### ランキング、Bootstrap、比較グラフ
 
 探索後はTraining内Walk Forward順の上位20モデルを表示・専用CSVへ保存します。
-各行に選定Score、Fold平均・標準偏差・Worst Fold、Training Score、全体指標、
-引分5指標、1／0／2予測率、全パラメータを残します。最終ValidationはBest行だけに
+各行にTraining Mean、Robust Training、標準偏差、Worst Fold、Mean−Worst、
+安定性／引分ペナルティ、Optuna objective、Training全体Score、全体指標、
+引分5指標、1／0／2的中率・予測率、全パラメータを残します。最終ValidationはBest行だけに
 表示し、その値で探索順位を後から並べ替えません。
+
+全Trialの各Foldについて、対象期間、開催回数、試合数、総合Score、Brier、Log Loss、
+Calibration、全体的中率、1／0／2的中率、引分Precision／Recall／F1を画面からCSVで
+保存できます。これにより、Bestになった理由をFinal Validationを参照せず再計算できます。
 
 再評価はなし、1,000回、10,000回または任意回数を選べ、Training内で選定済みの
 Best候補だけを最終Validationの試合単位Bootstrapで復元抽出します。Brier、Log Loss、Calibration、全体的中率、引分F1の
@@ -152,7 +180,8 @@ Best候補だけを最終Validationの試合単位Bootstrapで復元抽出しま
 可能な限り再現します。決定論的な同じバックテストを単純に何千回も繰り返す処理
 ではありません。
 
-グラフはTrialごとの選定／Walk Forward Score、Fold平均・標準偏差・Worst Fold、
+グラフはTrialごとのOptuna objective、Robust Training、Training Mean、
+Fold標準偏差・Worst Fold・各ペナルティ、
 Brier、Log Loss、Calibration、全体的中率、引分F1、Training全体との比較、
 パラメータ重要度を表示します。加えて
 シーズン別・リーグ別ScoreとBootstrap表を表示します。現在のVersion7-Aと候補は
@@ -164,10 +193,14 @@ Log Loss、Calibration、的中率をすべて上回り、過学習・引分悪�
 ### 保存、採用、バックアップ
 
 Trialは完了直後に`data/history/version7b_partial_trials.csv`へ逐次保存します。
+全Trial・全Fold明細は`version7b_fold_metrics.csv`へ逐次保存します。
 上位20モデルは`version7b_model_ranking.csv`、実行単位の設定・期間・seed・指標・
 最良係数・判定・採用有無は`version7b_optimization_history.csv`へ保存し、既存の
 予想履歴やVersion7-A履歴とは混在させません。破損した列構成を検出した場合は
 黙って上書きせず、画面へ理由を表示します。過去の最適化履歴は同じタブで確認できます。
+同じデータ・設定・seedを再実行してもRun IDは実行ごとに一意、設定Fingerprintは同一に
+なります。認識済みの旧Version7-B列は空の新列を補って移行し、旧100 Trialを削除・置換
+しません。同一Run IDを再保存した場合だけ重複防止のため同じ実行行を置換します。
 
 最適化完了だけでは本番設定を変更しません。「Version7-B最適設定を採用しますか？」
 で`YES`を押した場合だけ`data/config/version7b_model_settings.json`を原子的に更新し、
@@ -184,7 +217,8 @@ Streamlitの同期実行では、ページ再読込をまたぐ確実な停止�
 途中CSVから残りTrialだけを自動継続する機能は未実装です。Bootstrap信頼区間と過去
 Validation改善は将来成績を保証しません。パラメータ重要度は探索Trialとの単変量相関に
 基づく診断値で、因果効果ではありません。利用可能な確定済み開催回が少ないリーグ・
-シーズンでは警告を確認してください。
+シーズンでは警告を確認してください。Training内部Foldが安定していても、制度変更、
+カテゴリ構成、対戦分布などFinal Holdout側の分布変化までは保証できません。
 
 Version7-Cで予定する、toto買い目最適化、シングル／ダブル／トリプル配置、予算別
 買い目生成、投票率を使う期待値、買い目カバー率はVersion7-Bには実装しません。

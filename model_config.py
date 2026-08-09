@@ -321,6 +321,18 @@ VERSION7B_DEFAULT_EVALUATION_WEIGHTS = {
     "draw_performance": 0.10,
     "validation_stability": 0.10,
 }
+# Walk Forward安定性の尺度はFinal Validationを参照せず、Scoreの0～100尺度と
+# 既存の安定性重み10%から決める。標準偏差20点またはMean-Worst差40点で
+# 安定性寄与を使い切るため、既定重みでは実質ペナルティがそれぞれ
+# 0.5×標準偏差、0.25×Mean-Worst差になる。警告閾値5点／10点は、
+# 既存の過学習Score差10点の半分／同値に合わせている。
+VERSION7B_ROBUST_SELECTION_SETTINGS = {
+    "standard_deviation_scale": 20.0,
+    "worst_fold_gap_scale": 40.0,
+    "minimum_stability_folds": 2,
+    "standard_deviation_warning": 5.0,
+    "worst_fold_gap_warning": 10.0,
+}
 VERSION7B_DRAW_DEGRADATION_TOLERANCES = {
     "draw_f1_drop": 0.10,
     "draw_recall_drop": 0.10,

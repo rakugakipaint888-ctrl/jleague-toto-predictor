@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import builtins
+import csv
 import math
 import tempfile
 import unittest
@@ -19,6 +20,7 @@ from model_compare import (
     parameter_comparison_frame,
     ranking_frame,
     training_validation_frame,
+    trial_fold_metrics_frame,
     trial_metrics_frame,
     version7a_comparison_frame,
     walk_forward_stability_frame,
@@ -31,12 +33,18 @@ from model_evaluation import (
     check_overfitting,
     evaluate_candidate_rows,
     recommend_model_adoption,
+    robust_training_score,
+    stability_penalty,
     stability_quality,
 )
 from model_optimizer import (
     ALL_LEAGUES,
     GRID_SEARCH,
+    LEGACY_OPTIMIZATION_HISTORY_COLUMNS,
+    LEGACY_PARTIAL_TRIAL_COLUMNS,
     OPTUNA_SEARCH,
+    OPTIMIZATION_HISTORY_COLUMNS,
+    PARTIAL_TRIAL_COLUMNS,
     RANDOM_SEARCH,
     TWO_STAGE_SEARCH,
     ModelOptimizationDataset,
@@ -147,7 +155,15 @@ def _fake_evaluate_parameter_set(
                 draw_candidate=probabilities["0"] >= 0.25,
             )
         )
-    folds = (tuple(rows[:3]), tuple(rows[3:])) if fold_validation_rounds else ()
+    fold_count = len(fold_validation_rounds)
+    folds = (
+        tuple(
+            tuple(rows[index::fold_count])
+            for index in range(fold_count)
+        )
+        if fold_count
+        else ()
+    )
     return evaluate_candidate_rows(rows, weights=weights, fold_rows=folds)
 
 
@@ -337,6 +353,23 @@ class Version7BParameterAndEvaluationTest(unittest.TestCase):
         self.assertAlmostEqual(stability_quality((70.0, 70.0)), 1.0)
         self.assertAlmostEqual(stability_quality((80.0, 60.0)), 0.25)
 
+        unstable_scores = (63.0, 63.0, 63.0, 52.0)
+        stable_scores = (60.0, 60.0, 60.0, 60.0)
+        self.assertLess(
+            robust_training_score(unstable_scores),
+            robust_training_score(stable_scores),
+        )
+        self.assertGreater(stability_penalty(unstable_scores), 0.0)
+        self.assertEqual(stability_penalty(stable_scores), 0.0)
+
+        one_fold = evaluate_candidate_rows(good, fold_rows=(good,))
+        self.assertEqual(one_fold.fold_count, 1)
+        self.assertEqual(one_fold.stability_penalty, 0.0)
+        self.assertIn("安定性判定不可", one_fold.stability_label)
+
+        with self.assertRaisesRegex(ValueError, "評価試合0件"):
+            evaluate_candidate_rows(good, fold_rows=(good, ()))
+
     def test_league_stability_uses_only_the_supplied_final_validation_rows(
         self,
     ) -> None:
@@ -482,6 +515,29 @@ class Version7BWalkForwardAndPipelineTest(unittest.TestCase):
                 target_league="J2",
             )
 
+    def test_five_seasons_create_three_internal_folds(self) -> None:
+        dataset = prepare_model_dataset(
+            tuple(_official_round(1200 + index * 100, year) for index, year in enumerate(
+                (2022, 2023, 2024, 2025, 2026)
+            )),
+            _history(),
+            validation_method=SEASON_WALK_FORWARD,
+            target_league=ALL_LEAGUES,
+            requested_period="直近5シーズン",
+        )
+        self.assertEqual(dataset.fold_count, 3)
+        self.assertEqual(
+            tuple(fold.label for fold in dataset.split.folds),
+            ("2023シーズン検証", "2024シーズン検証", "2025シーズン検証"),
+        )
+        self.assertTrue(
+            all(
+                sum(item.match_count(ALL_LEAGUES) for item in fold.validation_rounds)
+                == 13
+                for fold in dataset.split.folds
+            )
+        )
+
 
 class Version7BSearchAndReportingTest(unittest.TestCase):
     def _run(self, method: str, trial_count: int, root: Path, *, seed: int = 1234):
@@ -515,6 +571,8 @@ class Version7BSearchAndReportingTest(unittest.TestCase):
             [record.parameters for record in second.all_trials],
         )
         self.assertEqual(first.best_parameters, second.best_parameters)
+        self.assertEqual(first.configuration_id, second.configuration_id)
+        self.assertNotEqual(first.run_id, second.run_id)
 
     def test_optuna_1_and_10_trials_complete_through_real_prediction_pipeline(
         self,
@@ -559,6 +617,9 @@ class Version7BSearchAndReportingTest(unittest.TestCase):
             partial_lines = (root / "actual-optuna-10.csv").read_text(
                 encoding="utf-8-sig"
             ).splitlines()
+            fold_lines = (root / "actual-optuna-10_fold_metrics.csv").read_text(
+                encoding="utf-8-sig"
+            ).splitlines()
 
         self.assertEqual(len(one.all_trials), 1)
         self.assertEqual(len(one.ranking), 1)
@@ -567,6 +628,9 @@ class Version7BSearchAndReportingTest(unittest.TestCase):
         self.assertEqual(len(ranking_lines), 11)
         self.assertEqual(len(history_lines), 2)
         self.assertEqual(len(partial_lines), 11)
+        self.assertEqual(len(fold_lines), 11)
+        self.assertNotEqual(one.run_id, ten.run_id)
+        self.assertNotEqual(one.configuration_id, ten.configuration_id)
         self.assertEqual(
             sum(record.final_validation is not None for record in ten.ranking),
             1,
@@ -802,6 +866,15 @@ class Version7BSearchAndReportingTest(unittest.TestCase):
             self.assertEqual(len(ranking_frame(result)), 10)
             self.assertEqual(len(trial_metrics_frame(result)), 10)
             self.assertEqual(len(walk_forward_stability_frame(result)), 1)
+            self.assertEqual(len(trial_fold_metrics_frame(result)), 10)
+            self.assertIn(
+                "Optuna objective",
+                set(ranking_frame(result).columns),
+            )
+            self.assertIn(
+                "対象期間",
+                set(walk_forward_stability_frame(result).columns),
+            )
             self.assertIn(
                 "Training→ValidationのScore低下量",
                 set(version7a_comparison_frame(result)["項目"]),
@@ -812,6 +885,75 @@ class Version7BSearchAndReportingTest(unittest.TestCase):
             history_path.write_text("broken,columns\n", encoding="utf-8")
             with self.assertRaisesRegex(ModelOptimizationError, "列が壊れています"):
                 save_optimization_history(result, path=history_path)
+
+    def test_repeated_configuration_preserves_prior_history_and_migrates_legacy(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            first = self._run(RANDOM_SEARCH, 3, root, seed=4242)
+            second = self._run(RANDOM_SEARCH, 3, root, seed=4242)
+            history_path = root / "legacy-history.csv"
+            with history_path.open("w", encoding="utf-8-sig", newline="") as file:
+                writer = csv.DictWriter(
+                    file,
+                    fieldnames=LEGACY_OPTIMIZATION_HISTORY_COLUMNS,
+                    lineterminator="\n",
+                )
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "run_id": "legacy-run",
+                        "executed_at": "2026-08-08T00:00:00+09:00",
+                        "version": "Version7-B",
+                    }
+                )
+            save_optimization_history(first, path=history_path)
+            save_optimization_history(second, path=history_path)
+            with history_path.open("r", encoding="utf-8-sig", newline="") as file:
+                rows = list(csv.DictReader(file))
+                header = tuple(rows[0].keys())
+            partial_path = root / "legacy-partial.csv"
+            with partial_path.open("w", encoding="utf-8-sig", newline="") as file:
+                writer = csv.DictWriter(
+                    file,
+                    fieldnames=LEGACY_PARTIAL_TRIAL_COLUMNS,
+                    lineterminator="\n",
+                )
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "run_id": "legacy-run",
+                        "trial_number": 33,
+                        "selection_score": 62.0,
+                    }
+                )
+            with patch(
+                "model_optimizer.evaluate_parameter_set",
+                side_effect=_fake_evaluate_parameter_set,
+            ):
+                run_model_optimization(
+                    _lightweight_dataset(),
+                    SearchConfiguration(
+                        method=RANDOM_SEARCH,
+                        trial_count=3,
+                        random_seed=4343,
+                    ),
+                    partial_path=partial_path,
+                )
+            with partial_path.open("r", encoding="utf-8-sig", newline="") as file:
+                partial_rows = list(csv.DictReader(file))
+                partial_header = tuple(partial_rows[0].keys())
+        self.assertEqual(header, OPTIMIZATION_HISTORY_COLUMNS)
+        self.assertEqual(len(rows), 3)
+        self.assertEqual({row["run_id"] for row in rows}, {
+            "legacy-run",
+            first.run_id,
+            second.run_id,
+        })
+        self.assertEqual(first.configuration_id, second.configuration_id)
+        self.assertNotEqual(first.run_id, second.run_id)
+        self.assertEqual(partial_header, PARTIAL_TRIAL_COLUMNS)
+        self.assertEqual(len(partial_rows), 4)
+        self.assertEqual(partial_rows[0]["run_id"], "legacy-run")
 
     def test_partial_csv_corruption_and_stop_are_not_silently_ignored(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

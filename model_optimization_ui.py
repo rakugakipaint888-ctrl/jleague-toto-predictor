@@ -23,6 +23,7 @@ from model_compare import (
     parameter_importance_frame,
     ranking_frame,
     stability_frame,
+    trial_fold_metrics_frame,
     training_validation_frame,
     trial_metrics_frame,
     version7a_comparison_frame,
@@ -189,11 +190,13 @@ def _csv_bytes(frame: pd.DataFrame) -> bytes:
 def _render_graphs(st, result: OptimizationResult) -> None:
     graph = trial_metrics_frame(result)
     for column, title in (
-        ("総合Score", "Trialごとの総合Score"),
-        ("Walk Forward Score", "Training内Walk Forward Score推移"),
-        ("WF平均Score", "Walk Forward Fold平均Score推移"),
+        ("Optuna objective", "TrialごとのOptuna objective"),
+        ("Robust Training Score", "Robust Training Score推移"),
+        ("Training Mean Score", "Walk Forward Fold平均Score推移"),
         ("WF標準偏差", "Walk Forward Fold標準偏差推移"),
         ("Worst Fold Score", "Worst Fold Score推移"),
+        ("安定性ペナルティ", "安定性ペナルティ推移"),
+        ("引分悪化ペナルティ", "Training内引分悪化ペナルティ推移"),
         ("Brier Score", "Brier Score推移"),
         ("Log Loss", "Log Loss推移"),
         ("Calibration", "Calibration推移"),
@@ -202,8 +205,17 @@ def _render_graphs(st, result: OptimizationResult) -> None:
     ):
         st.subheader(title)
         st.line_chart(graph[[column]])
-    st.subheader("Training全体ScoreとWalk Forward Score比較")
-    st.line_chart(graph[["Training全体Score", "Walk Forward Score"]])
+    st.subheader("Training全体・Mean・Robust・objective比較")
+    st.line_chart(
+        graph[
+            [
+                "Training全体Score",
+                "Training Mean Score",
+                "Robust Training Score",
+                "Optuna objective",
+            ]
+        ]
+    )
     importance = parameter_importance_frame(result)
     st.subheader("パラメータ重要度")
     if importance.empty:
@@ -217,6 +229,8 @@ def _render_result(st, result: OptimizationResult, bootstrap_results) -> None:
     overview = pd.DataFrame(
         [
             {
+                "Run ID": result.run_id,
+                "設定Fingerprint": result.configuration_id,
                 "探索方式": result.configuration.method,
                 "探索モデル数": len(result.all_trials),
                 "実際の使用期間": result.dataset.actual_period,
@@ -226,7 +240,10 @@ def _render_result(st, result: OptimizationResult, bootstrap_results) -> None:
                 "最終Validation試合数": result.dataset.validation_match_count,
                 "対象リーグ": result.dataset.target_league,
                 "検証方式": result.dataset.split.method,
-                "Best選定Score": result.best_score,
+                "Fold数": result.dataset.fold_count,
+                "Best Training Mean": result.ranking[0].training_mean_score,
+                "Best Robust Training": result.ranking[0].robust_training_score,
+                "Best Optuna objective": result.best_score,
                 "最終Validation Score": result.best_validation_score,
             }
         ]
@@ -266,6 +283,14 @@ def _render_result(st, result: OptimizationResult, bootstrap_results) -> None:
         mime="text/csv",
         width="stretch",
     )
+    all_fold_metrics = trial_fold_metrics_frame(result)
+    st.download_button(
+        "全Trial・全Fold明細をCSV保存",
+        data=_csv_bytes(all_fold_metrics),
+        file_name=f"version7b_fold_metrics_{result.run_id}.csv",
+        mime="text/csv",
+        width="stretch",
+    )
 
     st.subheader("現在設定と最適候補")
     parameters = parameter_comparison_frame(result)
@@ -274,27 +299,42 @@ def _render_result(st, result: OptimizationResult, bootstrap_results) -> None:
     stability = stability_frame(result)
     st.subheader("Training内Walk Forward安定性")
     fold_stability = walk_forward_stability_frame(result)
-    stability_columns = st.columns(4)
+    best_record = result.ranking[0]
+    stability_columns = st.columns(6)
     stability_columns[0].metric(
-        "Fold平均",
-        f"{result.best_selection_validation.fold_mean_score:.4f}",
+        "Training Mean",
+        f"{best_record.training_mean_score:.4f}",
     )
     stability_columns[1].metric(
-        "Fold標準偏差",
-        f"{result.best_selection_validation.fold_score_standard_deviation:.4f}",
+        "Robust Training",
+        f"{best_record.robust_training_score:.4f}",
     )
     stability_columns[2].metric(
-        "Worst Fold",
-        f"{result.best_selection_validation.worst_fold_score:.4f}",
+        "Fold標準偏差",
+        f"{best_record.fold_score_standard_deviation:.4f}",
     )
     stability_columns[3].metric(
-        "安定性品質",
-        f"{result.best_selection_validation.stability_quality:.4f}",
+        "Worst Fold",
+        f"{best_record.worst_fold_score:.4f}",
+    )
+    stability_columns[4].metric(
+        "安定性Penalty",
+        f"{best_record.stability_penalty:.4f}",
+    )
+    stability_columns[5].metric(
+        "Optuna objective",
+        f"{best_record.objective_value:.4f}",
     )
     st.dataframe(fold_stability, width="stretch", hide_index=True)
+    if best_record.stability_label == "特定期間依存の可能性":
+        st.warning(best_record.stability_label)
+    elif best_record.stability_label.startswith("安定性判定不可"):
+        st.info(best_record.stability_label)
+    else:
+        st.success(best_record.stability_label)
     st.caption(
-        "このFold平均・標準偏差・Worst FoldはTraining内データだけで算出し、"
-        "最終Validationを含みません。"
+        "Training Mean、標準偏差、Worst Fold、Robust Training Score、"
+        "Optuna objectiveはTraining内データだけで算出し、最終Validationを含みません。"
     )
 
     st.subheader("Best決定後の期間・リーグ別安定性")
@@ -517,10 +557,10 @@ def render_model_optimization_tab(
     slots[2].metric("残りTrial", plan.executable_models)
     slots[3].metric("経過時間", "00:00")
     slots[4].metric("推定残り", "—")
-    slots[5].metric("Best選定Score", "—")
+    slots[5].metric("Best Optuna objective", "—")
     secondary_columns = st.columns(4)
     secondary_slots = [column.empty() for column in secondary_columns]
-    secondary_slots[0].metric("Best WF統合Score", "—")
+    secondary_slots[0].metric("Best Robust Training", "—")
     secondary_slots[1].metric("Best Brier", "—")
     secondary_slots[2].metric("Best Log Loss", "—")
     secondary_slots[3].metric("Best引分F1", "—")
@@ -573,10 +613,10 @@ def render_model_optimization_tab(
                     "推定残り",
                     _format_seconds(item.estimated_remaining_seconds),
                 )
-                slots[5].metric("Best選定Score", f"{item.best_score:.4f}")
+                slots[5].metric("Best Optuna objective", f"{item.best_score:.4f}")
                 secondary_slots[0].metric(
-                    "Best WF統合Score",
-                    f"{item.best_walk_forward_score:.4f}",
+                    "Best Robust Training",
+                    f"{item.best_robust_training_score:.4f}",
                 )
                 secondary_slots[1].metric(
                     "Best Brier",
@@ -618,7 +658,7 @@ def render_model_optimization_tab(
             st.session_state["version7b_bootstrap_results"] = bootstrap_results
             progress.progress(1.0)
             status.success(
-                f"{len(result.all_trials)}モデル完了。Training内Best選定Score "
+                f"{len(result.all_trials)}モデル完了。Best Optuna objective "
                 f"{result.best_score:.4f}／最終Validation "
                 f"{result.best_validation_score:.4f}"
             )
