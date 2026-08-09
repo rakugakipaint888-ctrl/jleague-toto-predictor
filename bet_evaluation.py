@@ -16,6 +16,31 @@ from bet_optimizer import (
     optimize_bet_plan,
     target_source_match_numbers,
 )
+from history_manager import normalize_toto_payouts
+
+
+BET_BACKTEST_REQUIRED_COLUMNS = frozenset(
+    {
+        "toto_round",
+        "toto_match_number",
+        "prediction_version",
+        "probability_1",
+        "probability_0",
+        "probability_2",
+        "actual_result",
+    }
+)
+BET_BACKTEST_OPTIONAL_COLUMNS = frozenset(
+    {
+        "prediction_date",
+        "home_team",
+        "away_team",
+        "prediction",
+        "stake_yen",
+        "payout_yen",
+        "roi",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -56,15 +81,6 @@ def backtest_bet_strategy(
     配当は現行保存形式にないため、呼出側が明示的に渡さない限り算出しない。
     """
 
-    required = {
-        "toto_round",
-        "toto_match_number",
-        "prediction_version",
-        "probability_1",
-        "probability_0",
-        "probability_2",
-        "actual_result",
-    }
     if not isinstance(history, pd.DataFrame) or history.empty:
         return _empty_backtest(
             strategy,
@@ -73,10 +89,11 @@ def backtest_bet_strategy(
             double_count,
             triple_count,
         )
-    missing_columns = required - set(history.columns)
+    missing_columns = BET_BACKTEST_REQUIRED_COLUMNS - set(history.columns)
     if missing_columns:
         raise BetOptimizationError(
-            "買い目バックテストに必要な予想履歴列が不足しています。"
+            "買い目バックテストに必要な予想履歴列が不足しています："
+            + "、".join(sorted(missing_columns))
         )
 
     selected = history.loc[
@@ -145,14 +162,28 @@ def backtest_bet_strategy(
     total_purchase_yen = total_ticket_count * TOTO_TICKET_PRICE_YEN
     full_hit_count = sum(item[2] for item in round_results)
     round_ids = tuple(item[0] for item in round_results)
-    payouts = payouts_by_round or {}
+    payouts = payouts_by_round if isinstance(payouts_by_round, Mapping) else {}
+    normalized_payouts = {
+        round_id: normalize_toto_payouts(payouts.get(round_id))
+        for round_id in round_ids
+    }
+    payout_values = {
+        round_id: normalized_payouts[round_id].as_tuple()
+        for round_id in round_ids
+    }
     payout_data_available = bool(
         target == "toto"
-        and all(_toto_payouts(payouts.get(round_id))[0] > 0 for round_id in round_ids)
+        and all(
+            payout_values[round_id] is not None
+            for round_id in round_ids
+        )
     )
     if payout_data_available:
         total_payout = sum(
-            _round_payout(hit_distribution, _toto_payouts(payouts[round_id]))
+            _round_payout(
+                hit_distribution,
+                payout_values[round_id],
+            )
             for round_id, _, _, hit_distribution in round_results
         )
         profit = total_payout - total_purchase_yen
@@ -312,30 +343,6 @@ def _ticket_hit_distribution(
     if sum(distribution.values()) != plan.ticket_count:
         raise BetOptimizationError("買い目の的中数分布と総口数が一致しません。")
     return distribution
-
-
-def _toto_payouts(value: Any) -> tuple[int, int, int]:
-    """TotoPayouts、辞書、1等金だけの旧テスト入力を共通化する。"""
-
-    if value is None:
-        return (0, 0, 0)
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return (max(0, int(value)), 0, 0)
-    if isinstance(value, Mapping):
-        getter = value.get
-    else:
-        getter = lambda name, default=0: getattr(value, name, default)
-    try:
-        return tuple(
-            max(0, int(getter(field_name, 0)))
-            for field_name in (
-                "first_prize_yen",
-                "second_prize_yen",
-                "third_prize_yen",
-            )
-        )
-    except (TypeError, ValueError):
-        return (0, 0, 0)
 
 
 def _round_payout(

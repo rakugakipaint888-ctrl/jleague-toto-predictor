@@ -36,6 +36,26 @@ NO_TOTO_ROUND = TotoRoundLoadResult(
 )
 
 
+class LegacyMissingPayoutRecord:
+    """canonicalな1等列を持たない旧Series adapter。"""
+
+    def __init__(self) -> None:
+        self.row = pd.Series(
+            {
+                "second_prize": 200,
+                "third_prize": 50,
+            }
+        )
+
+    @property
+    def first_prize_yen(self):
+        return self.row["first_prize_yen"]
+
+
+class LegacyMissingPayoutRound:
+    payouts = LegacyMissingPayoutRecord()
+
+
 def completed_history(version: str = "Version7-A") -> pd.DataFrame:
     rows = []
     for round_id in (1701, 1702):
@@ -555,6 +575,110 @@ class Version7CStreamlitTest(unittest.TestCase):
             all(result.prediction_version == "Version6" for result in results)
         )
         self.assertTrue(all(result.evaluated_rounds == 2 for result in results))
+        self.assertEqual(len(app.exception), 0)
+        self.assertEqual(len(app.error), 0)
+
+    def test_end_to_end_version6_then_on_demand_version7a_without_payout(
+        self,
+    ) -> None:
+        """起動から買い目、Version6、Version7-A生成まで1本で通す。"""
+
+        version6_history = completed_history("Version6")
+        version6_history = version6_history.loc[
+            version6_history["toto_round"] == 1701
+        ].copy()
+        version6_history["toto_round"] = 1548
+        self.history_frame = version6_history
+        toto_round = completed_round()
+        loaded = TotoRoundLoadResult(
+            toto_round=toto_round,
+            source_name="テスト",
+            status="loaded",
+            message="読み込みました。",
+        )
+
+        with (
+            patch(
+                "history_manager.TotoHistoryManager.load_round",
+                return_value=loaded,
+            ),
+            patch(
+                "history_manager.TotoHistoryManager.load_saved_round",
+                return_value=LegacyMissingPayoutRound(),
+            ),
+            patch(
+                "analysis.collect_historical_matches",
+                return_value=tuple(historical_matches()),
+            ),
+        ):
+            app = self._predicted_app()
+            self.assertEqual(len(app.exception), 0)
+
+            next(
+                button
+                for button in app.button
+                if button.key == "version7c_optimize"
+            ).click()
+            app = app.run(timeout=25)
+            self.assertGreaterEqual(len(self._display_plan_frames(app)), 2)
+            self.assertGreaterEqual(
+                sum("version7c" in str(item.key) for item in app.download_button),
+                2,
+            )
+
+            next(
+                item
+                for item in app.selectbox
+                if item.key == "version7c_backtest_version"
+            ).select("Version6")
+            app = app.run(timeout=25)
+            next(
+                button
+                for button in app.button
+                if button.key == "version7c_backtest"
+            ).click()
+            app = app.run(timeout=25)
+            version6_results = app.session_state["version7c_backtest_results"]
+            self.assertTrue(
+                all(item.evaluated_rounds == 1 for item in version6_results)
+            )
+            self.assertTrue(
+                all(not item.payout_data_available for item in version6_results)
+            )
+
+            next(
+                item
+                for item in app.selectbox
+                if item.key == "version7c_backtest_version"
+            ).select("Version7-A")
+            app = app.run(timeout=25)
+            next(
+                button
+                for button in app.button
+                if button.key == "version7c_backtest"
+            ).click()
+            app = app.run(timeout=25)
+
+        generation = app.session_state[
+            "version7c_version7a_history_generation"
+        ]
+        version7a_results = app.session_state["version7c_backtest_results"]
+        self.assertEqual(generation.generated_round_count, 1)
+        self.assertEqual(generation.generated_match_count, 13)
+        self.assertEqual(generation.actual_result_count, 13)
+        self.assertTrue(
+            all(item.evaluated_rounds == 1 for item in version7a_results)
+        )
+        self.assertTrue(
+            all(not item.payout_data_available for item in version7a_results)
+        )
+        self.assertTrue(
+            any(
+                "払戻データなし：払戻金・収支・ROIは推測せず算出していません。"
+                == item.value
+                for item in app.info
+            )
+        )
         self.assertEqual(len(app.exception), 0)
         self.assertEqual(len(app.error), 0)
 

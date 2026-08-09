@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from history_manager import TotoPayouts, TotoRound
+from history_manager import TotoRound, normalize_toto_payouts
 from metrics import (
     DEFAULT_TOTO_STAKE_YEN,
     TOTO_OUTCOMES,
@@ -152,7 +152,7 @@ def finalize_prediction_results(result_df: pd.DataFrame) -> pd.DataFrame:
 
 def apply_round_metrics(
     frame: pd.DataFrame,
-    payouts_by_round: Optional[Mapping[int, TotoPayouts]] = None,
+    payouts_by_round: Optional[Mapping[int, Any]] = None,
 ) -> pd.DataFrame:
     """開催回・Versionごとの指標を各行へ反映する。"""
 
@@ -204,13 +204,14 @@ def apply_round_metrics(
             round_id = int(round_value)
         except (TypeError, ValueError):
             round_id = 0
-        payouts = payouts_by_round.get(round_id)
-        if payouts is not None:
+        normalized_payouts = normalize_toto_payouts(
+            payouts_by_round.get(round_id)
+        )
+        payout_values = normalized_payouts.as_tuple()
+        if payout_values is not None:
             payout_yen = toto_payout_for_hits(
                 hit_count,
-                payouts.first_prize_yen,
-                payouts.second_prize_yen,
-                payouts.third_prize_yen,
+                *payout_values,
             )
         else:
             stored_payout = pd.to_numeric(
@@ -432,7 +433,7 @@ class PredictionHistoryManager:
         self,
         records: Iterable[PredictionHistoryRecord | Mapping[str, Any]],
         *,
-        payouts_by_round: Optional[Mapping[int, TotoPayouts]] = None,
+        payouts_by_round: Optional[Mapping[int, Any]] = None,
     ) -> bool:
         new_rows = []
         for record in records:

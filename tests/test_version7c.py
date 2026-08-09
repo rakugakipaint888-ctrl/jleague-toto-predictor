@@ -46,6 +46,7 @@ from bet_optimizer import (
     optimize_bet_plan,
     select_double_outcomes,
 )
+from history_manager import TotoPayouts
 
 
 def probability_frame() -> pd.DataFrame:
@@ -541,6 +542,46 @@ class Version7CCoverageManualAndExportTest(unittest.TestCase):
 
 
 class Version7CBacktestTest(unittest.TestCase):
+    def test_missing_required_history_column_is_named(self) -> None:
+        history = completed_history().drop(columns=["actual_result"])
+
+        with self.assertRaisesRegex(
+            BetOptimizationError,
+            "actual_result",
+        ):
+            backtest_bet_strategy(
+                history,
+                strategy="A",
+                target="toto",
+                prediction_version="Version7-A",
+                double_count=0,
+                triple_count=0,
+                draw_candidate_threshold=0.25,
+                draw_candidate_margin=0.05,
+            )
+
+    def test_optional_history_columns_can_be_absent(self) -> None:
+        history = completed_history().drop(
+            columns=[
+                "prediction_date",
+                "home_team",
+                "away_team",
+            ]
+        )
+
+        result = backtest_bet_strategy(
+            history,
+            strategy="A",
+            target="toto",
+            prediction_version="Version7-A",
+            double_count=0,
+            triple_count=0,
+            draw_candidate_threshold=0.25,
+            draw_candidate_margin=0.05,
+        )
+
+        self.assertEqual(result.evaluated_rounds, 2)
+
     def test_strategy_backtest_counts_hits_stake_and_known_payout(self) -> None:
         history = completed_history()
         payouts = {
@@ -608,6 +649,30 @@ class Version7CBacktestTest(unittest.TestCase):
         self.assertTrue(all(not result.payout_data_available for result in results))
         self.assertTrue(all(result.total_payout_yen is None for result in results))
         self.assertTrue(all(result.roi is None for result in results))
+
+    def test_one_incomplete_payout_round_disables_roi_not_hit_evaluation(self) -> None:
+        results = compare_bet_strategies(
+            completed_history(),
+            target="toto",
+            prediction_version="Version7-A",
+            double_count=1,
+            triple_count=1,
+            draw_candidate_threshold=0.25,
+            draw_candidate_margin=0.05,
+            payouts_by_round={
+                1701: TotoPayouts(10_000, 1_000, 100),
+                1702: {
+                    "second_prize_yen": 2_000,
+                    "third_prize_yen": 200,
+                },
+            },
+        )
+
+        self.assertTrue(all(item.evaluated_rounds == 2 for item in results))
+        self.assertTrue(all(not item.payout_data_available for item in results))
+        self.assertTrue(all(item.total_payout_yen is None for item in results))
+        self.assertTrue(all(item.profit_yen is None for item in results))
+        self.assertTrue(all(item.roi is None for item in results))
 
 
 if __name__ == "__main__":

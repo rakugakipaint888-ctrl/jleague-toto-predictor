@@ -6,12 +6,13 @@
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from io import StringIO
 from pathlib import Path
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Callable, Mapping, Optional, Sequence
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -84,6 +85,50 @@ ROUND_CSV_COLUMNS = (
     "source_url",
     "fetched_at",
 )
+ROUND_CSV_REQUIRED_COLUMNS = (
+    "round_id",
+    "match_number",
+    "home_team",
+    "away_team",
+    "match_time",
+)
+ROUND_CSV_OPTIONAL_COLUMNS = tuple(
+    column
+    for column in ROUND_CSV_COLUMNS
+    if column not in ROUND_CSV_REQUIRED_COLUMNS
+)
+ROUND_CSV_COLUMN_ALIASES = {
+    "round_id": ("round_id", "toto_round", "holdCntId", "開催回"),
+    "match_number": (
+        "match_number",
+        "toto_match_number",
+        "試合番号",
+    ),
+    "home_team": ("home_team", "ホーム", "home"),
+    "away_team": ("away_team", "アウェイ", "away"),
+    "match_time": ("match_time", "match_date", "開催日時", "開催日"),
+    "first_prize_yen": (
+        "first_prize_yen",
+        "first_prize",
+        "1等",
+        "1等当せん金",
+        "1等払戻金",
+    ),
+    "second_prize_yen": (
+        "second_prize_yen",
+        "second_prize",
+        "2等",
+        "2等当せん金",
+        "2等払戻金",
+    ),
+    "third_prize_yen": (
+        "third_prize_yen",
+        "third_prize",
+        "3等",
+        "3等当せん金",
+        "3等払戻金",
+    ),
+}
 
 
 class TotoDataError(RuntimeError):
@@ -105,6 +150,43 @@ class TotoPayouts:
     first_prize_yen: int = 0
     second_prize_yen: int = 0
     third_prize_yen: int = 0
+
+
+@dataclass(frozen=True)
+class NormalizedTotoPayouts:
+    """形式差と欠損を保持した、払戻入力境界の正規形。"""
+
+    first_prize_yen: Optional[int] = None
+    second_prize_yen: Optional[int] = None
+    third_prize_yen: Optional[int] = None
+
+    @property
+    def is_complete(self) -> bool:
+        return all(
+            value is not None
+            for value in (
+                self.first_prize_yen,
+                self.second_prize_yen,
+                self.third_prize_yen,
+            )
+        )
+
+    @property
+    def is_available_for_roi(self) -> bool:
+        return bool(
+            self.is_complete
+            and self.first_prize_yen is not None
+            and self.first_prize_yen > 0
+        )
+
+    def as_tuple(self) -> Optional[tuple[int, int, int]]:
+        if not self.is_available_for_roi:
+            return None
+        return (
+            int(self.first_prize_yen),
+            int(self.second_prize_yen),
+            int(self.third_prize_yen),
+        )
 
 
 @dataclass(frozen=True)
@@ -193,6 +275,250 @@ class TotoRoundLoadResult:
     @property
     def is_loaded(self) -> bool:
         return self.toto_round is not None and self.status == "loaded"
+
+
+_PAYOUT_FIELDS = (
+    "first_prize_yen",
+    "second_prize_yen",
+    "third_prize_yen",
+)
+_MISSING = object()
+
+
+def _optional_money(value: Any) -> Optional[int]:
+    """円表記、数値、None、NaNを非負整数またはNoneへそろえる。"""
+
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (pd.DataFrame, pd.Series, Mapping, list, tuple)):
+        return None
+    try:
+        if bool(pd.isna(value)):
+            return None
+    except (TypeError, ValueError):
+        return None
+    text = re.sub(r"[,，\s円¥￥]", "", str(value))
+    if not text:
+        return None
+    try:
+        number = float(text)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number) or number < 0 or not number.is_integer():
+        return None
+    return int(number)
+
+
+def _mapping_value(
+    values: Mapping[Any, Any],
+    aliases: Sequence[str],
+) -> Any:
+    for alias in aliases:
+        try:
+            if alias in values:
+                return values[alias]
+        except (KeyError, TypeError, ValueError):
+            continue
+    return _MISSING
+
+
+def _object_value(value: Any, aliases: Sequence[str]) -> Any:
+    for alias in aliases:
+        try:
+            return getattr(value, alias)
+        except (AttributeError, KeyError, IndexError, TypeError, ValueError):
+            continue
+    return _MISSING
+
+
+def normalize_toto_payouts(value: Any) -> NormalizedTotoPayouts:
+    """払戻の全入力形式を、欠損を0埋めしない正規形へ変換する。
+
+    ``TotoRound``／``TotoPayouts``、辞書、保存行のSeries・DataFrame、
+    1～3等の3要素配列、1等金だけの旧数値形式を受け付ける。存在しない列や
+    属性は例外ではなくNoneとして保持し、ROI可否は``is_available_for_roi``で
+    判定する。
+    """
+
+    if isinstance(value, NormalizedTotoPayouts):
+        return value
+    if value is None:
+        return NormalizedTotoPayouts()
+
+    if isinstance(value, pd.DataFrame):
+        if value.empty:
+            return NormalizedTotoPayouts()
+        return normalize_toto_payouts(value.iloc[0].to_dict())
+    if isinstance(value, pd.Series):
+        if value.empty:
+            return NormalizedTotoPayouts()
+        return normalize_toto_payouts(value.to_dict())
+
+    if isinstance(value, Mapping):
+        values: Mapping[Any, Any] = value
+    elif isinstance(value, (tuple, list)):
+        if len(value) < 3:
+            return NormalizedTotoPayouts(
+                first_prize_yen=(
+                    _optional_money(value[0]) if value else None
+                )
+            )
+        return NormalizedTotoPayouts(
+            first_prize_yen=_optional_money(value[0]),
+            second_prize_yen=_optional_money(value[1]),
+            third_prize_yen=_optional_money(value[2]),
+        )
+    elif isinstance(value, (int, float, str)) and not isinstance(value, bool):
+        return NormalizedTotoPayouts(first_prize_yen=_optional_money(value))
+    else:
+        try:
+            object_values = vars(value)
+        except (TypeError, ValueError):
+            object_values = {}
+        values = object_values if isinstance(object_values, Mapping) else {}
+
+    nested = _mapping_value(
+        values,
+        ("payouts", "prizes", "払戻", "row", "record"),
+    )
+    if nested is _MISSING and not isinstance(value, Mapping):
+        nested = _object_value(value, ("payouts", "prizes", "row", "record"))
+    has_direct_field = any(
+        _mapping_value(values, ROUND_CSV_COLUMN_ALIASES[field]) is not _MISSING
+        for field in _PAYOUT_FIELDS
+    )
+    if nested is not _MISSING and nested is not value and not has_direct_field:
+        return normalize_toto_payouts(nested)
+
+    normalized_values: dict[str, Optional[int]] = {}
+    for field_name in _PAYOUT_FIELDS:
+        aliases = ROUND_CSV_COLUMN_ALIASES[field_name]
+        raw_value = _mapping_value(values, aliases)
+        if raw_value is _MISSING and not isinstance(value, Mapping):
+            raw_value = _object_value(value, aliases)
+        normalized_values[field_name] = (
+            None if raw_value is _MISSING else _optional_money(raw_value)
+        )
+    return NormalizedTotoPayouts(**normalized_values)
+
+
+def safe_get_first_prize(value: Any) -> Optional[int]:
+    """形式に依存せず1等金をintまたはNoneで返す。"""
+
+    return normalize_toto_payouts(value).first_prize_yen
+
+
+def normalize_saved_round_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    """保存開催回CSVを正式列へ変換し、必須列不足を明示する。"""
+
+    if not isinstance(frame, pd.DataFrame):
+        raise TotoDataFormatError("保存済みtoto開催回はDataFrameではありません。")
+    if frame.empty:
+        return pd.DataFrame(columns=ROUND_CSV_COLUMNS)
+
+    normalized = frame.copy()
+    for canonical, aliases in ROUND_CSV_COLUMN_ALIASES.items():
+        if canonical in normalized.columns:
+            continue
+        source = next(
+            (alias for alias in aliases if alias in normalized.columns),
+            None,
+        )
+        if source is not None:
+            normalized[canonical] = normalized[source]
+
+    missing_required = tuple(
+        column
+        for column in ROUND_CSV_REQUIRED_COLUMNS
+        if column not in normalized.columns
+    )
+    if missing_required:
+        raise TotoDataFormatError(
+            "保存済みtoto開催回の必須列が不足しています："
+            + "、".join(missing_required)
+        )
+    for column in ROUND_CSV_OPTIONAL_COLUMNS:
+        if column not in normalized.columns:
+            normalized[column] = pd.NA
+    return normalized.loc[:, list(ROUND_CSV_COLUMNS)].copy()
+
+
+def _history_round_column(history: pd.DataFrame) -> Optional[pd.Series]:
+    if not isinstance(history, pd.DataFrame) or history.empty:
+        return None
+    positions = [
+        index
+        for index, column in enumerate(history.columns)
+        if str(column) == "toto_round"
+    ]
+    if not positions:
+        return None
+    return history.iloc[:, positions[0]]
+
+
+def _history_round_ids(history: pd.DataFrame) -> tuple[int, ...]:
+    round_column = _history_round_column(history)
+    if round_column is None:
+        return ()
+    numeric_values = pd.to_numeric(round_column, errors="coerce").dropna()
+    round_ids = set()
+    for value in numeric_values:
+        number = float(value)
+        if math.isfinite(number) and number > 0 and number.is_integer():
+            round_ids.add(int(number))
+    return tuple(sorted(round_ids))
+
+
+def get_saved_toto_payouts(
+    history_manager: Any,
+    history: pd.DataFrame,
+    *,
+    target: str,
+) -> dict[int, NormalizedTotoPayouts]:
+    """保存開催回からROI算出に十分な払戻だけを安全に返す。
+
+    toto以外、履歴なし、旧開催回、払戻列不足、取得失敗は空辞書となり、買い目
+    生成と的中率評価は継続する。保存開催回に払戻がない場合だけ、履歴に正式な
+    1～3等列が存在すれば同じ正規化をフォールバック適用する。
+    """
+
+    if target != "toto":
+        return {}
+    round_column = _history_round_column(history)
+    round_ids = _history_round_ids(history)
+    if round_column is None or not round_ids:
+        return {}
+
+    loader = None
+    try:
+        loader = getattr(history_manager, "load_saved_round")
+    except (AttributeError, KeyError, TypeError, ValueError):
+        loader = None
+
+    payouts_by_round: dict[int, NormalizedTotoPayouts] = {}
+    numeric_rounds = pd.to_numeric(round_column, errors="coerce")
+    for round_id in round_ids:
+        saved_round = None
+        if callable(loader):
+            try:
+                saved_round = loader(round_id)
+            except (
+                AttributeError,
+                KeyError,
+                IndexError,
+                OSError,
+                TotoDataError,
+                TypeError,
+                ValueError,
+            ):
+                saved_round = None
+        normalized = normalize_toto_payouts(saved_round)
+        if not normalized.is_available_for_roi:
+            selected_rows = history.loc[numeric_rounds == round_id]
+            normalized = normalize_toto_payouts(selected_rows)
+        if normalized.is_available_for_roi:
+            payouts_by_round[round_id] = normalized
+    return payouts_by_round
 
 
 def _normalize_text(value: Any) -> str:
@@ -733,6 +1059,7 @@ def _round_from_saved_rows(rows: pd.DataFrame) -> TotoRound:
     if rows.empty:
         raise TotoDataNotFoundError("保存済みtoto開催回がありません。")
     round_id = int(pd.to_numeric(rows.iloc[0]["round_id"]))
+    normalized_payouts = normalize_toto_payouts(rows)
     matches = []
     for _, row in rows.sort_values("match_number").iterrows():
         match_time_value = _optional_datetime(row.get("match_time"))
@@ -768,15 +1095,9 @@ def _round_from_saved_rows(rows: pd.DataFrame) -> TotoRound:
         sale_end=_optional_datetime(rows.iloc[0].get("sale_end")),
         result_date=parsed_result_date,
         payouts=TotoPayouts(
-            first_prize_yen=_optional_int(
-                rows.iloc[0].get("first_prize_yen")
-            ) or 0,
-            second_prize_yen=_optional_int(
-                rows.iloc[0].get("second_prize_yen")
-            ) or 0,
-            third_prize_yen=_optional_int(
-                rows.iloc[0].get("third_prize_yen")
-            ) or 0,
+            first_prize_yen=normalized_payouts.first_prize_yen or 0,
+            second_prize_yen=normalized_payouts.second_prize_yen or 0,
+            third_prize_yen=normalized_payouts.third_prize_yen or 0,
         ),
         source_url=_normalize_text(rows.iloc[0].get("source_url")),
     )
@@ -798,11 +1119,10 @@ class TotoHistoryManager:
             frame = pd.read_csv(self.csv_path, encoding="utf-8-sig")
         except (OSError, UnicodeError, pd.errors.ParserError, pd.errors.EmptyDataError):
             return pd.DataFrame(columns=ROUND_CSV_COLUMNS)
-        if not {"round_id", "match_number", "home_team", "away_team"}.issubset(
-            frame.columns
-        ):
+        try:
+            return normalize_saved_round_frame(frame)
+        except TotoDataFormatError:
             return pd.DataFrame(columns=ROUND_CSV_COLUMNS)
-        return frame
 
     def save_round(self, toto_round: TotoRound) -> bool:
         """開催回単位で13行を置換し、UTF-8 BOM付きCSVへ保存する。"""

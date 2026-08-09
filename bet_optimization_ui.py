@@ -57,6 +57,7 @@ from bet_optimizer import (
     plan_fingerprint,
     target_label,
 )
+from history_manager import get_saved_toto_payouts
 from model_config import VERSION7A_MODEL_VERSION, VERSION7B_MODEL_VERSION
 
 
@@ -492,7 +493,7 @@ def _render_strategy_backtest(
                     ] = signature
                     for message in version7b_result.messages:
                         st.warning(message)
-                payouts = _saved_toto_payouts(
+                payouts = get_saved_toto_payouts(
                     history_manager,
                     history,
                     target=settings["target"],
@@ -728,28 +729,6 @@ def _sync_manual_outcomes(
 
 def _display_plan_frame(plan: BetPlan) -> pd.DataFrame:
     return bet_plan_display_frame(plan)
-
-
-def _saved_toto_payouts(
-    history_manager: Any,
-    history: pd.DataFrame,
-    *,
-    target: str,
-) -> dict[int, Any]:
-    if target != "toto" or "toto_round" not in history.columns:
-        return {}
-    payouts = {}
-    round_values = pd.to_numeric(history["toto_round"], errors="coerce").dropna()
-    for round_id in sorted({int(value) for value in round_values}):
-        try:
-            toto_round = history_manager.load_saved_round(round_id)
-        except (AttributeError, OSError, TypeError, ValueError):
-            toto_round = None
-        toto_payouts = getattr(toto_round, "payouts", None)
-        first_prize = int(getattr(toto_payouts, "first_prize_yen", 0))
-        if first_prize > 0:
-            payouts[round_id] = toto_payouts
-    return payouts
 
 
 def _round_label(frame: pd.DataFrame) -> str:
