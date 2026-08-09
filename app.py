@@ -1,5 +1,3 @@
-import importlib
-import inspect
 from dataclasses import replace
 from datetime import datetime
 
@@ -18,11 +16,8 @@ from version7b_pipeline import ensure_version7b_model_pipeline
 ensure_version7b_model_config()
 ensure_version7b_model_pipeline()
 
-import analysis as _analysis
-import bet_evaluation as _bet_evaluation
-import bet_export as _bet_export
-import bet_optimizer as _bet_optimizer
-import bet_optimization_ui as _bet_optimization_ui
+from analysis import render_analysis_tab
+from bet_optimization_ui import render_bet_optimization_tab
 from draw_analysis import render_draw_analysis_tab
 from draw_optimizer import load_active_draw_settings
 from draw_predictor import (
@@ -73,128 +68,6 @@ from teams import (
     format_team_option,
     normalize_team_name,
 )
-
-
-BET_OPTIMIZATION_TAB_KEYWORDS = (
-    "prediction_history_manager",
-    "history_manager",
-    "active_draw_settings",
-    "fallback_matches",
-)
-BET_OPTIMIZATION_ANALYSIS_EXPORTS = (
-    "Version7AHistoryGenerationResult",
-    "ensure_version7a_strategy_history",
-    "reconcile_saved_version7b_strategy_history",
-    "render_analysis_tab",
-)
-BET_PLAN_DISPLAY_SCHEMA_VERSION = 1
-
-
-def _has_current_bet_optimization_tab_signature(renderer) -> bool:
-    """Version7-Cタブの呼び出し契約が現行4引数と一致するか確認する。"""
-
-    if not callable(renderer):
-        return False
-    try:
-        signature = inspect.signature(renderer)
-    except (TypeError, ValueError):
-        return False
-    if tuple(signature.parameters) != BET_OPTIMIZATION_TAB_KEYWORDS:
-        return False
-    parameters = tuple(signature.parameters.values())
-    if any(
-        parameter.kind is not inspect.Parameter.KEYWORD_ONLY
-        for parameter in parameters
-    ):
-        return False
-    if any(
-        parameter.default is not inspect.Parameter.empty
-        for parameter in parameters[:3]
-    ):
-        return False
-    return parameters[3].default == ()
-
-
-def _has_current_bet_plan_display_schema() -> bool:
-    """表示列の生成側とUI側が同じ正式スキーマを参照するか確認する。"""
-
-    export_version = getattr(
-        _bet_export,
-        "BET_PLAN_DISPLAY_SCHEMA_VERSION",
-        None,
-    )
-    ui_version = getattr(
-        _bet_optimization_ui,
-        "BET_PLAN_DISPLAY_SCHEMA_VERSION",
-        None,
-    )
-    frame_columns = tuple(
-        getattr(_bet_export, "BET_PLAN_FRAME_COLUMNS", ())
-    )
-    export_columns = tuple(
-        getattr(_bet_export, "BET_PLAN_DISPLAY_COLUMNS", ())
-    )
-    ui_columns = tuple(
-        getattr(_bet_optimization_ui, "BET_PLAN_DISPLAY_COLUMNS", ())
-    )
-    return bool(
-        export_version == BET_PLAN_DISPLAY_SCHEMA_VERSION
-        and ui_version == BET_PLAN_DISPLAY_SCHEMA_VERSION
-        and export_columns
-        and export_columns == ui_columns
-        and set(export_columns).issubset(frame_columns)
-        and callable(getattr(_bet_export, "bet_plan_display_frame", None))
-    )
-
-
-def _load_bet_optimization_tab_renderer():
-    """Streamlit hot rerunに残った旧引数・旧表示スキーマを再読込する。"""
-
-    renderer = getattr(
-        _bet_optimization_ui,
-        "render_bet_optimization_tab",
-        None,
-    )
-    if (
-        not _has_current_bet_optimization_tab_signature(renderer)
-        or not _has_current_bet_plan_display_schema()
-    ):
-        importlib.invalidate_caches()
-        if not all(
-            hasattr(_analysis, export_name)
-            for export_name in BET_OPTIMIZATION_ANALYSIS_EXPORTS
-        ):
-            importlib.reload(_analysis)
-        # Version7-C初期版のBetPlan／表生成関数が残る場合があるため、依存順に
-        # 再読込してからUIを再読込する。予測確率や買い目ロジックは変更しない。
-        importlib.reload(_bet_optimizer)
-        importlib.reload(_bet_export)
-        importlib.reload(_bet_evaluation)
-        reloaded_module = importlib.reload(_bet_optimization_ui)
-        renderer = getattr(
-            reloaded_module,
-            "render_bet_optimization_tab",
-            None,
-        )
-    if not _has_current_bet_optimization_tab_signature(renderer):
-        actual_signature = (
-            str(inspect.signature(renderer))
-            if callable(renderer)
-            else "not callable"
-        )
-        raise RuntimeError(
-            "render_bet_optimization_tabの引数が現行契約と一致しません: "
-            f"{actual_signature}"
-        )
-    if not _has_current_bet_plan_display_schema():
-        raise RuntimeError(
-            "Version7-C買い目表示スキーマを現行契約へ更新できませんでした。"
-        )
-    return renderer
-
-
-render_bet_optimization_tab = _load_bet_optimization_tab_renderer()
-render_analysis_tab = _analysis.render_analysis_tab
 
 
 # --------------------------------------------------

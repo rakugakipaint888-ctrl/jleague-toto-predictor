@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import ast
+import os
 import subprocess
 import sys
+import tempfile
 import textwrap
 import unittest
 from pathlib import Path
@@ -25,6 +27,22 @@ VERSION7B_MODULES = (
     "model_compare",
     "model_optimization_ui",
 )
+VERSION7C_MODULES = (
+    "bet_config",
+    "bet_optimizer",
+    "bet_export",
+    "bet_evaluation",
+    "bet_optimization_ui",
+)
+VERSION7C_IMPORT_GRAPH_MODULES = {
+    "app",
+    "analysis",
+    "bet_config",
+    "bet_optimizer",
+    "bet_export",
+    "bet_evaluation",
+    "bet_optimization_ui",
+}
 
 
 def _module_trees() -> dict[str, ast.Module]:
@@ -125,6 +143,100 @@ class ImportIntegrityTest(unittest.TestCase):
     def test_local_import_graph_has_no_cycles(self) -> None:
         cycle = _find_cycle(_local_import_graph(_module_trees()))
         self.assertEqual(cycle, ())
+
+    def test_version7c_import_graph_has_no_cycles(self) -> None:
+        graph = _local_import_graph(_module_trees())
+        version7c_graph = {
+            module: graph[module] & VERSION7C_IMPORT_GRAPH_MODULES
+            for module in VERSION7C_IMPORT_GRAPH_MODULES
+        }
+        self.assertEqual(_find_cycle(version7c_graph), ())
+
+    def test_bet_optimizer_imports_only_existing_bet_config_names(self) -> None:
+        trees = _module_trees()
+        config_exports = _exported_names(trees["bet_config"])
+        optimizer_config_imports = {
+            alias.name
+            for node in ast.walk(trees["bet_optimizer"])
+            if isinstance(node, ast.ImportFrom)
+            and node.level == 0
+            and node.module == "bet_config"
+            for alias in node.names
+            if alias.name != "*"
+        }
+        self.assertTrue(optimizer_config_imports)
+        self.assertEqual(optimizer_config_imports - config_exports, set())
+
+    def test_app_uses_static_version7c_imports_without_reload(self) -> None:
+        tree = _module_trees()["app"]
+        imported_renderers = {
+            (node.module, alias.name)
+            for node in tree.body
+            if isinstance(node, ast.ImportFrom) and node.module
+            for alias in node.names
+        }
+        self.assertIn(
+            ("analysis", "render_analysis_tab"),
+            imported_renderers,
+        )
+        self.assertIn(
+            ("bet_optimization_ui", "render_bet_optimization_tab"),
+            imported_renderers,
+        )
+        self.assertFalse(
+            any(
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "importlib"
+                and node.func.attr == "reload"
+                for node in ast.walk(tree)
+            )
+        )
+
+    def test_version7c_modules_import_in_one_clean_process(self) -> None:
+        script = "\n".join(
+            [*(f"import {module}" for module in VERSION7C_MODULES), """
+assert bet_export.BetPlan is bet_optimizer.BetPlan
+assert bet_evaluation.BetPlan is bet_optimizer.BetPlan
+assert bet_optimization_ui.BetPlan is bet_optimizer.BetPlan
+assert bet_optimization_ui.BET_PLAN_DISPLAY_COLUMNS is bet_export.BET_PLAN_DISPLAY_COLUMNS
+print("Version7-C clean imports: OK")
+"""]
+        )
+        completed = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        self.assertEqual(
+            completed.returncode,
+            0,
+            completed.stderr or completed.stdout,
+        )
+
+    def test_app_imports_in_a_clean_python_process(self) -> None:
+        with tempfile.TemporaryDirectory() as pycache_directory:
+            environment = os.environ.copy()
+            environment["PYTHONPYCACHEPREFIX"] = pycache_directory
+            environment["STREAMLIT_BROWSER_GATHER_USAGE_STATS"] = "false"
+            completed = subprocess.run(
+                [sys.executable, "-c", "import app"],
+                cwd=PROJECT_ROOT,
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=90,
+                check=False,
+            )
+        self.assertEqual(
+            completed.returncode,
+            0,
+            completed.stderr or completed.stdout,
+        )
 
     def test_version7b_config_exports_are_model_config_values(self) -> None:
         self.assertIs(version7b_config.ensure_version7b_model_config(), model_config)

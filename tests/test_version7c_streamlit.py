@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ast
-import importlib
 import inspect
 import os
 import tempfile
@@ -16,12 +15,8 @@ import streamlit as st
 from streamlit.testing.v1 import AppTest
 
 import bet_optimization_ui
-import bet_export
 from analysis import Version7AHistoryGenerationResult
-from bet_export import (
-    BET_PLAN_DISPLAY_COLUMNS,
-    BET_PLAN_DISPLAY_SCHEMA_VERSION,
-)
+from bet_export import BET_PLAN_DISPLAY_COLUMNS
 from data_loader import CsvMatchDataSource
 from history_manager import (
     TotoRoundLoadResult,
@@ -207,92 +202,6 @@ class Version7CStreamlitTest(unittest.TestCase):
             if isinstance(element.value, pd.DataFrame)
             and tuple(element.value.columns) == BET_PLAN_DISPLAY_COLUMNS
         ]
-
-    def test_cached_legacy_plan_schema_is_reloaded_before_plan_render(
-        self,
-    ) -> None:
-        current_builder = bet_export.bet_plan_frame
-
-        def legacy_builder(plan):
-            return current_builder(plan).drop(
-                columns=[
-                    "Draw Inclusion Score",
-                    "Draw Inclusion判定",
-                    "0入替Coverage低下",
-                ]
-            )
-
-        bet_export.BET_PLAN_DISPLAY_SCHEMA_VERSION = 0
-        bet_export.bet_plan_frame = legacy_builder
-        bet_optimization_ui.BET_PLAN_DISPLAY_SCHEMA_VERSION = 0
-        try:
-            app = self._predicted_app()
-            next(
-                button
-                for button in app.button
-                if button.key == "version7c_optimize"
-            ).click()
-            app = app.run(timeout=25)
-
-            self.assertEqual(
-                bet_export.BET_PLAN_DISPLAY_SCHEMA_VERSION,
-                BET_PLAN_DISPLAY_SCHEMA_VERSION,
-            )
-            self.assertEqual(
-                bet_optimization_ui.BET_PLAN_DISPLAY_SCHEMA_VERSION,
-                BET_PLAN_DISPLAY_SCHEMA_VERSION,
-            )
-            frames = self._display_plan_frames(app)
-            self.assertGreaterEqual(len(frames), 2)
-            self.assertTrue(all(len(frame) == 13 for frame in frames))
-            self.assertEqual(len(app.exception), 0)
-            self.assertEqual(len(app.error), 0)
-        finally:
-            importlib.reload(bet_export)
-            importlib.reload(bet_optimization_ui)
-
-    def test_cached_three_argument_renderer_is_reloaded_before_tab_call(
-        self,
-    ) -> None:
-        current_renderer = bet_optimization_ui.render_bet_optimization_tab
-
-        def cached_renderer(
-            *,
-            prediction_history_manager,
-            history_manager,
-            active_draw_settings,
-        ):
-            return current_renderer(
-                prediction_history_manager=prediction_history_manager,
-                history_manager=history_manager,
-                active_draw_settings=active_draw_settings,
-            )
-
-        bet_optimization_ui.render_bet_optimization_tab = cached_renderer
-        try:
-            app = self._predicted_app()
-            runtime_signature = inspect.signature(
-                bet_optimization_ui.render_bet_optimization_tab
-            )
-            self.assertEqual(
-                tuple(runtime_signature.parameters),
-                (
-                    "prediction_history_manager",
-                    "history_manager",
-                    "active_draw_settings",
-                    "fallback_matches",
-                ),
-            )
-            self.assertTrue(
-                any(
-                    item.value == "Version7-C 買い目最適化"
-                    for item in app.subheader
-                )
-            )
-            self.assertEqual(len(app.exception), 0)
-            self.assertEqual(len(app.error), 0)
-        finally:
-            bet_optimization_ui.render_bet_optimization_tab = current_renderer
 
     def test_renderer_signature_matches_every_app_call(self) -> None:
         signature = inspect.signature(
