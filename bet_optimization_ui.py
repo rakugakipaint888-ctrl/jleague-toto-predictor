@@ -4,10 +4,16 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, Sequence
 
 import pandas as pd
 import streamlit as st
+
+from analysis import (
+    Version7AHistoryGenerationResult,
+    ensure_version7a_strategy_history,
+    reconcile_saved_version7b_strategy_history,
+)
 
 from bet_config import (
     BET_TARGETS,
@@ -49,6 +55,7 @@ from bet_optimizer import (
     plan_fingerprint,
     target_label,
 )
+from model_config import VERSION7A_MODEL_VERSION, VERSION7B_MODEL_VERSION
 
 
 TARGET_LABEL_TO_KEY = {
@@ -66,6 +73,7 @@ def render_bet_optimization_tab(
     prediction_history_manager: Any,
     history_manager: Any,
     active_draw_settings: Any,
+    fallback_matches: Sequence[Any] = (),
 ) -> None:
     """通常予想の最新確率を買い目へ変換する。"""
 
@@ -93,6 +101,7 @@ def render_bet_optimization_tab(
             prediction_history_manager=prediction_history_manager,
             history_manager=history_manager,
             settings=current_settings,
+            fallback_matches=fallback_matches,
         )
 
 
@@ -388,25 +397,25 @@ def _render_strategy_backtest(
     prediction_history_manager: Any,
     history_manager: Any,
     settings: Mapping[str, Any],
+    fallback_matches: Sequence[Any] = (),
 ) -> None:
     try:
         history = prediction_history_manager.load()
     except (OSError, TypeError, ValueError):
         history = pd.DataFrame()
-    if not isinstance(history, pd.DataFrame) or history.empty:
-        st.info("確定結果付きの保存済み予想履歴がないため、戦略比較は未実施です。")
-        return
+    if not isinstance(history, pd.DataFrame):
+        history = pd.DataFrame()
 
+    saved_versions = tuple(
+        str(value)
+        for value in history.get("prediction_version", pd.Series(dtype=str))
+        if str(value).strip()
+    )
     available_versions = tuple(
         dict.fromkeys(
-            str(value)
-            for value in history.get("prediction_version", pd.Series(dtype=str))
-            if str(value).strip()
+            (*saved_versions, VERSION7A_MODEL_VERSION, VERSION7B_MODEL_VERSION)
         )
     )
-    if not available_versions:
-        st.info("予想履歴にVersion情報がないため、戦略比較は未実施です。")
-        return
     preferred = settings["prediction_version"]
     default_index = (
         available_versions.index(preferred)
@@ -435,6 +444,52 @@ def _render_strategy_backtest(
             width="stretch",
         ):
             try:
+                generation_result = None
+                version7b_result = None
+                if version == VERSION7A_MODEL_VERSION:
+                    progress_area = st.empty()
+
+                    def update_progress(
+                        current: int,
+                        total: int,
+                        message: str,
+                    ) -> None:
+                        progress_area.info(
+                            "Version7-Aの過去予測履歴を生成しています "
+                            f"（{current}/{max(1, total)}）\n\n{message}"
+                        )
+
+                    update_progress(0, 1, "確定済み開催回を確認しています。")
+                    generation_result = ensure_version7a_strategy_history(
+                        prediction_history_manager=prediction_history_manager,
+                        history_manager=history_manager,
+                        fallback_matches=fallback_matches,
+                        progress_callback=update_progress,
+                    )
+                    progress_area.empty()
+                    history = prediction_history_manager.load()
+                    st.session_state[
+                        "version7c_version7a_history_generation"
+                    ] = generation_result
+                    st.session_state[
+                        "version7c_version7a_history_generation_request"
+                    ] = signature
+                    for message in generation_result.messages:
+                        st.warning(message)
+                elif version == VERSION7B_MODEL_VERSION:
+                    version7b_result = reconcile_saved_version7b_strategy_history(
+                        prediction_history_manager=prediction_history_manager,
+                        history_manager=history_manager,
+                    )
+                    history = prediction_history_manager.load()
+                    st.session_state[
+                        "version7c_version7b_history_reconciliation"
+                    ] = version7b_result
+                    st.session_state[
+                        "version7c_version7b_history_reconciliation_request"
+                    ] = signature
+                    for message in version7b_result.messages:
+                        st.warning(message)
                 payouts = _saved_toto_payouts(
                     history_manager,
                     history,
@@ -454,8 +509,55 @@ def _render_strategy_backtest(
                 st.session_state["version7c_backtest_request"] = signature
             except BetOptimizationError as error:
                 st.error(str(error))
-            except (TypeError, ValueError):
+            except (OSError, TypeError, ValueError):
                 st.error("保存済み予想履歴を使った戦略比較を実行できませんでした。")
+
+        generation_result = st.session_state.get(
+            "version7c_version7a_history_generation"
+        )
+        if (
+            version == VERSION7A_MODEL_VERSION
+            and isinstance(generation_result, Version7AHistoryGenerationResult)
+            and st.session_state.get(
+                "version7c_version7a_history_generation_request"
+            )
+            == signature
+        ):
+            st.caption("Version7-A履歴の準備結果")
+            generation_columns = st.columns(3)
+            generation_columns[0].metric(
+                "対象開催回数",
+                generation_result.target_round_count,
+            )
+            generation_columns[1].metric(
+                "生成した開催回数",
+                generation_result.generated_round_count,
+            )
+            generation_columns[2].metric(
+                "生成した試合数",
+                generation_result.generated_match_count,
+            )
+            st.caption(
+                "actual_result紐付け："
+                f"{generation_result.actual_result_count}件"
+            )
+
+        version7b_result = st.session_state.get(
+            "version7c_version7b_history_reconciliation"
+        )
+        if (
+            version == VERSION7B_MODEL_VERSION
+            and st.session_state.get(
+                "version7c_version7b_history_reconciliation_request"
+            )
+            == signature
+            and version7b_result is not None
+            and not getattr(version7b_result, "evaluable_round_ids", ())
+        ):
+            st.warning(
+                "Version7-Bは当時保存された予測履歴が必要です。"
+                "現在設定で過去予測は再生成しません。"
+            )
 
         results = st.session_state.get("version7c_backtest_results")
         if (
@@ -463,7 +565,23 @@ def _render_strategy_backtest(
             and st.session_state.get("version7c_backtest_request") == signature
         ):
             if not results or all(result.evaluated_rounds == 0 for result in results):
-                st.warning("実結果まで揃った対象開催回を確認できませんでした。")
+                if version == VERSION7B_MODEL_VERSION:
+                    # Version7-Bは上で保存履歴が必要であることを明示する。
+                    pass
+                elif (
+                    version == VERSION7A_MODEL_VERSION
+                    and isinstance(
+                        generation_result,
+                        Version7AHistoryGenerationResult,
+                    )
+                    and generation_result.target_round_count == 0
+                ):
+                    st.warning(
+                        "Version7-Aを再生成できる確定済みJリーグtoto開催回を"
+                        "確認できませんでした。通信状態と公式データを確認してください。"
+                    )
+                else:
+                    st.warning("実結果まで揃った対象開催回を確認できませんでした。")
             else:
                 st.dataframe(
                     backtest_frame(results),

@@ -2058,4 +2058,5 @@ with bet_optimization_tab:
         prediction_history_manager=prediction_history_manager,
         history_manager=toto_history_manager,
         active_draw_settings=active_draw_settings,
+        fallback_matches=match_data_result.completed_matches,
     )

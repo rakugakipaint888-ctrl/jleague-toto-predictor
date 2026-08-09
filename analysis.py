@@ -4,21 +4,34 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional, Sequence
+from typing import Callable, Optional, Sequence
 
 import pandas as pd
 
 from backtest import (
+    BacktestDataLeakError,
     BacktestError,
     BacktestResult,
     fetch_historical_matches,
     run_backtest,
 )
-from draw_optimizer import load_active_draw_settings, prepare_draw_round
+from data_loader import JAPAN_TIMEZONE, OfficialMatch
+from draw_evaluation import normalize_toto_label
+from draw_optimizer import (
+    DrawOptimizationError,
+    collect_historical_matches,
+    load_active_draw_settings,
+    prepare_draw_round,
+)
 from draw_predictor import DrawSettings, predict_draw_aware
-from history_manager import TotoHistoryManager, TotoPayouts, TotoRoundSummary
+from history_manager import (
+    TotoHistoryManager,
+    TotoPayouts,
+    TotoRound,
+    TotoRoundSummary,
+)
 from metrics import TOTO_OUTCOMES, aggregate_roi, evaluate_model
-from model_config import VERSION7A_MODEL_VERSION
+from model_config import VERSION7A_MODEL_VERSION, VERSION7B_MODEL_VERSION
 from prediction_history import (
     HISTORY_COLUMNS,
     PredictionHistoryRecord,
@@ -39,6 +52,194 @@ class AnalysisTables:
     calibration: pd.DataFrame
 
 
+DEFAULT_ON_DEMAND_STRATEGY_ROUND_LIMIT = 3
+HistoryGenerationProgress = Callable[[int, int, str], None]
+
+
+@dataclass(frozen=True)
+class Version7AHistoryGenerationResult:
+    """Version7-C画面から準備したVersion7-A履歴の件数。"""
+
+    target_round_ids: tuple[int, ...]
+    generated_round_ids: tuple[int, ...]
+    generated_match_count: int
+    actual_result_count: int
+    failed_round_ids: tuple[int, ...] = ()
+    messages: tuple[str, ...] = ()
+
+    @property
+    def target_round_count(self) -> int:
+        return len(self.target_round_ids)
+
+    @property
+    def generated_round_count(self) -> int:
+        return len(self.generated_round_ids)
+
+
+@dataclass(frozen=True)
+class Version7BHistoryReconciliationResult:
+    """保存済みVersion7-Bへ公式実結果を照合した件数。"""
+
+    saved_round_ids: tuple[int, ...]
+    evaluable_round_ids: tuple[int, ...]
+    reconciled_round_ids: tuple[int, ...]
+    actual_result_count: int
+    messages: tuple[str, ...] = ()
+
+
+def _history_for_version(
+    history: pd.DataFrame,
+    prediction_version: Optional[str],
+) -> pd.DataFrame:
+    if not isinstance(history, pd.DataFrame) or history.empty:
+        return pd.DataFrame()
+    required = {
+        "toto_round",
+        "toto_match_number",
+        "prediction_version",
+        "actual_result",
+    }
+    if not required.issubset(history.columns):
+        return pd.DataFrame()
+    selected = history.copy()
+    if prediction_version is not None:
+        selected = selected.loc[
+            selected["prediction_version"].astype(str)
+            == str(prediction_version)
+        ]
+    if selected.empty:
+        return selected
+    selected["_round"] = pd.to_numeric(
+        selected["toto_round"], errors="coerce"
+    )
+    selected["_match"] = pd.to_numeric(
+        selected["toto_match_number"], errors="coerce"
+    )
+    selected = selected.dropna(subset=["_round", "_match"])
+    if "prediction_date" in selected.columns:
+        selected = selected.sort_values("prediction_date")
+    return selected.drop_duplicates(
+        ["_round", "_match", "prediction_version"],
+        keep="last",
+    )
+
+
+def prediction_history_round_ids(
+    history: pd.DataFrame,
+    prediction_version: str,
+) -> tuple[int, ...]:
+    """指定Versionの行が1件以上ある開催回IDを新しい順で返す。"""
+
+    selected = _history_for_version(history, prediction_version)
+    if selected.empty:
+        return ()
+    return tuple(
+        sorted(
+            {int(value) for value in selected["_round"]},
+            reverse=True,
+        )
+    )
+
+
+def complete_prediction_history_round_ids(
+    history: pd.DataFrame,
+    prediction_version: Optional[str],
+) -> tuple[int, ...]:
+    """試合番号1～13と実結果が揃う開催回IDだけを返す。"""
+
+    selected = _history_for_version(history, prediction_version)
+    if selected.empty:
+        return ()
+    complete_round_ids = []
+    required_numbers = set(range(1, 14))
+    for round_value, group in selected.groupby("_round"):
+        rows_by_number = {
+            int(row["_match"]): row
+            for _, row in group.iterrows()
+            if int(row["_match"]) in required_numbers
+        }
+        if set(rows_by_number) != required_numbers:
+            continue
+        if not all(
+            normalize_toto_label(row.get("actual_result")) in ("1", "0", "2")
+            for row in rows_by_number.values()
+        ):
+            continue
+        complete_round_ids.append(int(round_value))
+    return tuple(sorted(complete_round_ids, reverse=True))
+
+
+def _actual_result_count(
+    history: pd.DataFrame,
+    prediction_version: str,
+    round_ids: Sequence[int],
+) -> int:
+    selected = _history_for_version(history, prediction_version)
+    if selected.empty:
+        return 0
+    target_ids = {int(value) for value in round_ids}
+    selected = selected.loc[
+        selected["_round"].astype(int).isin(target_ids)
+        & selected["_match"].astype(int).isin(range(1, 14))
+    ]
+    return sum(
+        normalize_toto_label(value) in ("1", "0", "2")
+        for value in selected["actual_result"]
+    )
+
+
+def _load_completed_round(
+    history_manager: TotoHistoryManager,
+    round_id: int,
+) -> Optional[TotoRound]:
+    try:
+        loaded_result = history_manager.load_round(int(round_id))
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+    toto_round = getattr(loaded_result, "toto_round", None)
+    if not isinstance(toto_round, TotoRound):
+        return None
+    if not toto_round.is_complete or not toto_round.is_jleague_round:
+        return None
+    return toto_round
+
+
+def _recent_completed_jleague_rounds(
+    history_manager: TotoHistoryManager,
+    *,
+    limit: int,
+    progress_callback: Optional[HistoryGenerationProgress] = None,
+) -> tuple[TotoRound, ...]:
+    maximum = max(1, int(limit))
+    try:
+        catalog = history_manager.load_catalog()
+    except (AttributeError, OSError, TypeError, ValueError):
+        return ()
+    selected = []
+    seen = set()
+    for summary in catalog:
+        try:
+            round_id = int(summary.round_id)
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if round_id in seen:
+            continue
+        seen.add(round_id)
+        if progress_callback is not None:
+            progress_callback(
+                len(selected),
+                maximum,
+                f"第{round_id}回の確定状況を確認しています。",
+            )
+        toto_round = _load_completed_round(history_manager, round_id)
+        if toto_round is None:
+            continue
+        selected.append(toto_round)
+        if len(selected) >= maximum:
+            break
+    return tuple(selected)
+
+
 def version7a_history_records(
     toto_round,
     historical_matches: Sequence,
@@ -49,6 +250,13 @@ def version7a_history_records(
     """過去開催日時点のVersion7-Aを履歴CSV用13行へ変換する。"""
 
     prepared = prepare_draw_round(toto_round, historical_matches)
+    if any(
+        row.latest_source_time >= row.cutoff_at
+        for row in prepared.rows
+    ):
+        raise BacktestDataLeakError(
+            "Version7-A履歴へ開催初日以後の試合結果が混入しました。"
+        )
     matches_by_number = {
         match.match_number: match for match in prepared.toto_round.matches
     }
@@ -84,6 +292,253 @@ def version7a_history_records(
             )
         )
     return records
+
+
+def ensure_version7a_strategy_history(
+    *,
+    prediction_history_manager: PredictionHistoryManager,
+    history_manager: TotoHistoryManager,
+    fallback_matches: Sequence[OfficialMatch] = (),
+    settings: Optional[DrawSettings] = None,
+    fresh_round_limit: int = DEFAULT_ON_DEMAND_STRATEGY_ROUND_LIMIT,
+    progress_callback: Optional[HistoryGenerationProgress] = None,
+    generated_at: Optional[datetime] = None,
+) -> Version7AHistoryGenerationResult:
+    """Version7-C戦略比較に必要なVersion7-A履歴を必要時だけ生成する。
+
+    保存済みVersion6の確定回を優先する。履歴が完全に空の場合だけ、公式一覧から
+    直近の確定済みJリーグtotoを取得する。予測計算は既存の
+    :func:`version7a_history_records`へ集約し、Version7-C内へ二重実装しない。
+    """
+
+    try:
+        history = prediction_history_manager.load()
+    except (OSError, TypeError, ValueError):
+        history = pd.DataFrame()
+
+    complete_version7a = set(
+        complete_prediction_history_round_ids(
+            history,
+            VERSION7A_MODEL_VERSION,
+        )
+    )
+    candidate_ids = list(
+        complete_prediction_history_round_ids(history, "Version6")
+    )
+    for round_id in prediction_history_round_ids(
+        history,
+        VERSION7A_MODEL_VERSION,
+    ):
+        if round_id not in candidate_ids:
+            candidate_ids.append(round_id)
+    if not candidate_ids:
+        candidate_ids.extend(
+            complete_prediction_history_round_ids(history, None)
+        )
+
+    rounds_by_id: dict[int, TotoRound] = {}
+    failed_round_ids = []
+    messages = []
+    missing_candidate_ids = [
+        round_id
+        for round_id in candidate_ids
+        if round_id not in complete_version7a
+    ]
+    for index, round_id in enumerate(missing_candidate_ids, start=1):
+        if progress_callback is not None:
+            progress_callback(
+                index - 1,
+                len(missing_candidate_ids),
+                f"第{round_id}回の公式実結果を確認しています。",
+            )
+        toto_round = _load_completed_round(history_manager, round_id)
+        if toto_round is None:
+            failed_round_ids.append(round_id)
+            messages.append(
+                f"第{round_id}回は公式13試合・実結果を確認できませんでした。"
+            )
+            continue
+        rounds_by_id[round_id] = toto_round
+
+    if not candidate_ids:
+        recent_rounds = _recent_completed_jleague_rounds(
+            history_manager,
+            limit=fresh_round_limit,
+            progress_callback=progress_callback,
+        )
+        candidate_ids = [item.round_id for item in recent_rounds]
+        rounds_by_id = {item.round_id: item for item in recent_rounds}
+
+    verified_target_ids = [
+        round_id
+        for round_id in candidate_ids
+        if round_id in complete_version7a or round_id in rounds_by_id
+    ]
+    rounds_to_generate = [
+        rounds_by_id[round_id]
+        for round_id in verified_target_ids
+        if round_id not in complete_version7a
+    ]
+
+    shared_history: tuple[OfficialMatch, ...] = ()
+    if rounds_to_generate:
+        try:
+            shared_history = collect_historical_matches(
+                rounds_to_generate,
+                fallback_matches=fallback_matches,
+            )
+        except (BacktestError, DrawOptimizationError, OSError, TypeError, ValueError) as error:
+            failed_round_ids.extend(
+                item.round_id for item in rounds_to_generate
+            )
+            messages.append(str(error))
+            rounds_to_generate = []
+
+    selected_settings = settings or load_active_draw_settings()
+    generation_time = generated_at or datetime.now(JAPAN_TIMEZONE)
+    if generation_time.tzinfo is None:
+        generation_time = generation_time.replace(tzinfo=JAPAN_TIMEZONE)
+    generated_round_ids = []
+    for index, toto_round in enumerate(rounds_to_generate, start=1):
+        if progress_callback is not None:
+            progress_callback(
+                index,
+                len(rounds_to_generate),
+                f"第{toto_round.round_id}回のVersion7-A予測を生成しています。",
+            )
+        try:
+            records = version7a_history_records(
+                toto_round,
+                shared_history,
+                settings=selected_settings,
+                generated_at=generation_time,
+            )
+            match_numbers = {
+                int(record.toto_match_number) for record in records
+            }
+            actuals_complete = all(
+                normalize_toto_label(record.actual_result) in ("1", "0", "2")
+                for record in records
+            )
+            if len(records) != 13 or match_numbers != set(range(1, 14)):
+                raise DrawOptimizationError(
+                    f"第{toto_round.round_id}回の試合番号1～13を生成できませんでした。"
+                )
+            if not actuals_complete:
+                raise DrawOptimizationError(
+                    f"第{toto_round.round_id}回の実結果13件を確認できませんでした。"
+                )
+            saved = prediction_history_manager.save_records(
+                records,
+                payouts_by_round={
+                    toto_round.round_id: toto_round.payouts
+                },
+            )
+            if not saved:
+                raise OSError(
+                    f"第{toto_round.round_id}回のVersion7-A履歴を保存できませんでした。"
+                )
+            prediction_history_manager.reconcile_actual_results(toto_round)
+            reloaded = prediction_history_manager.load()
+            if toto_round.round_id not in complete_prediction_history_round_ids(
+                reloaded,
+                VERSION7A_MODEL_VERSION,
+            ):
+                raise OSError(
+                    f"第{toto_round.round_id}回のVersion7-A履歴を検証できませんでした。"
+                )
+            generated_round_ids.append(toto_round.round_id)
+        except (
+            BacktestError,
+            DrawOptimizationError,
+            OSError,
+            TypeError,
+            ValueError,
+        ) as error:
+            failed_round_ids.append(toto_round.round_id)
+            messages.append(str(error))
+
+    try:
+        final_history = prediction_history_manager.load()
+    except (OSError, TypeError, ValueError):
+        final_history = pd.DataFrame()
+    final_complete_ids = set(
+        complete_prediction_history_round_ids(
+            final_history,
+            VERSION7A_MODEL_VERSION,
+        )
+    )
+    final_target_ids = tuple(
+        round_id
+        for round_id in verified_target_ids
+        if round_id in final_complete_ids
+    )
+    return Version7AHistoryGenerationResult(
+        target_round_ids=final_target_ids,
+        generated_round_ids=tuple(generated_round_ids),
+        generated_match_count=13 * len(generated_round_ids),
+        actual_result_count=_actual_result_count(
+            final_history,
+            VERSION7A_MODEL_VERSION,
+            final_target_ids,
+        ),
+        failed_round_ids=tuple(sorted(set(failed_round_ids), reverse=True)),
+        messages=tuple(message for message in messages if message),
+    )
+
+
+def reconcile_saved_version7b_strategy_history(
+    *,
+    prediction_history_manager: PredictionHistoryManager,
+    history_manager: TotoHistoryManager,
+    prediction_version: str = VERSION7B_MODEL_VERSION,
+) -> Version7BHistoryReconciliationResult:
+    """当時保存されたVersion7-Bだけへ公式実結果を照合する。"""
+
+    try:
+        history = prediction_history_manager.load()
+    except (OSError, TypeError, ValueError):
+        history = pd.DataFrame()
+    saved_round_ids = prediction_history_round_ids(
+        history,
+        prediction_version,
+    )
+    complete_before = set(
+        complete_prediction_history_round_ids(history, prediction_version)
+    )
+    reconciled_round_ids = []
+    messages = []
+    for round_id in saved_round_ids:
+        if round_id in complete_before:
+            continue
+        toto_round = _load_completed_round(history_manager, round_id)
+        if toto_round is None:
+            messages.append(
+                f"第{round_id}回の公式実結果を確認できませんでした。"
+            )
+            continue
+        if prediction_history_manager.reconcile_actual_results(toto_round):
+            reconciled_round_ids.append(round_id)
+
+    try:
+        final_history = prediction_history_manager.load()
+    except (OSError, TypeError, ValueError):
+        final_history = pd.DataFrame()
+    evaluable_round_ids = complete_prediction_history_round_ids(
+        final_history,
+        prediction_version,
+    )
+    return Version7BHistoryReconciliationResult(
+        saved_round_ids=saved_round_ids,
+        evaluable_round_ids=evaluable_round_ids,
+        reconciled_round_ids=tuple(reconciled_round_ids),
+        actual_result_count=_actual_result_count(
+            final_history,
+            prediction_version,
+            evaluable_round_ids,
+        ),
+        messages=tuple(messages),
+    )
 
 
 def _probability_rows(group: pd.DataFrame) -> list[dict[str, float]]:
