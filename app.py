@@ -16,6 +16,7 @@ from version7b_pipeline import ensure_version7b_model_pipeline
 ensure_version7b_model_config()
 ensure_version7b_model_pipeline()
 
+import bet_optimization_ui
 from analysis import render_analysis_tab
 from bet_optimization_ui import render_bet_optimization_tab
 from draw_analysis import render_draw_analysis_tab
@@ -62,6 +63,11 @@ from prediction_history import (
     PredictionHistoryManager,
     finalize_prediction_results,
 )
+from runtime_diagnostics import (
+    get_app_commit,
+    log_runtime_diagnostics,
+    short_app_commit,
+)
 from teams import (
     TEAM_CATEGORY_BY_NAME,
     TEAM_OPTIONS,
@@ -79,6 +85,10 @@ st.set_page_config(
     page_icon="⚽",
     layout="centered",
 )
+
+APP_COMMIT_SHA = get_app_commit()
+log_runtime_diagnostics(bet_optimization_ui, APP_COMMIT_SHA)
+st.sidebar.caption(f"App Commit: {short_app_commit(APP_COMMIT_SHA)}")
 
 
 # --------------------------------------------------
