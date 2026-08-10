@@ -123,8 +123,11 @@ class Version7CScalarAccessTest(unittest.TestCase):
     def test_first_scalar_reads_nonzero_index_series_by_position(self) -> None:
         values = pd.Series(["Version7-A"], index=[13])
 
-        with self.assertRaisesRegex(KeyError, "0"):
-            _ = values[0]
+        self.assertEqual(bet_optimization_ui._first_scalar(values), "Version7-A")
+
+    def test_first_scalar_reads_round_index_series_by_position(self) -> None:
+        values = pd.Series(["Version7-A"], index=[1645])
+
         self.assertEqual(bet_optimization_ui._first_scalar(values), "Version7-A")
 
     def test_first_scalar_reads_first_of_nonzero_index_series(self) -> None:
@@ -132,9 +135,10 @@ class Version7CScalarAccessTest(unittest.TestCase):
 
         self.assertEqual(bet_optimization_ui._first_scalar(values), "Version7-A")
 
-    def test_first_scalar_returns_none_for_empty_series(self) -> None:
-        self.assertIsNone(
-            bet_optimization_ui._first_scalar(pd.Series(dtype=object))
+    def test_first_scalar_returns_empty_text_for_empty_series(self) -> None:
+        self.assertEqual(
+            bet_optimization_ui._first_scalar(pd.Series(dtype=object)),
+            "",
         )
 
     def test_first_scalar_reads_list(self) -> None:
@@ -155,8 +159,8 @@ class Version7CScalarAccessTest(unittest.TestCase):
             "Version7-A",
         )
 
-    def test_first_scalar_returns_none_for_none(self) -> None:
-        self.assertIsNone(bet_optimization_ui._first_scalar(None))
+    def test_first_scalar_returns_empty_text_for_none(self) -> None:
+        self.assertEqual(bet_optimization_ui._first_scalar(None), "")
 
     def test_first_scalar_reads_dataframe_by_position(self) -> None:
         values = pd.DataFrame(
@@ -392,6 +396,12 @@ class Version7CStreamlitTest(unittest.TestCase):
             any(
                 item.key == "version7c_backtest_version"
                 for item in app.selectbox
+            )
+        )
+        self.assertTrue(
+            any(
+                item.label == "過去データで買い目戦略を比較"
+                for item in app.expander
             )
         )
 

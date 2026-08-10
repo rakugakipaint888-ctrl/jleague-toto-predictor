@@ -744,15 +744,17 @@ def _first_scalar(values: Any) -> Any:
     """先頭値を、pandasのindex labelに依存せず位置で取得する。"""
 
     if values is None:
-        return None
+        return ""
     if isinstance(values, pd.DataFrame):
-        return None if values.empty else values.iloc[0, 0]
+        return "" if values.empty else values.iloc[0, 0]
     if isinstance(values, pd.Series):
-        return None if values.empty else values.iloc[0]
+        if values.empty:
+            return ""
+        return values.iloc[0]
     if isinstance(values, np.ndarray):
-        return None if values.size == 0 else values.reshape(-1).item(0)
+        return "" if values.size == 0 else values.reshape(-1).item(0)
     if isinstance(values, (list, tuple)):
-        return next(iter(values), None)
+        return next(iter(values), "")
     return values
 
 
