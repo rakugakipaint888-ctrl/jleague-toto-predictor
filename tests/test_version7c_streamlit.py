@@ -10,6 +10,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import numpy as np
 import pandas as pd
 import streamlit as st
 from streamlit.testing.v1 import AppTest
@@ -111,6 +112,75 @@ def display_probability_frame(*, include_draw_candidates: bool) -> pd.DataFrame:
             }
         )
     return pd.DataFrame(rows)
+
+
+class Version7CScalarAccessTest(unittest.TestCase):
+    def test_first_scalar_reads_zero_index_series(self) -> None:
+        values = pd.Series(["Version7-A"], index=[0])
+
+        self.assertEqual(bet_optimization_ui._first_scalar(values), "Version7-A")
+
+    def test_first_scalar_reads_nonzero_index_series_by_position(self) -> None:
+        values = pd.Series(["Version7-A"], index=[13])
+
+        with self.assertRaisesRegex(KeyError, "0"):
+            _ = values[0]
+        self.assertEqual(bet_optimization_ui._first_scalar(values), "Version7-A")
+
+    def test_first_scalar_reads_first_of_nonzero_index_series(self) -> None:
+        values = pd.Series(["Version7-A", "Version6"], index=[13, 26])
+
+        self.assertEqual(bet_optimization_ui._first_scalar(values), "Version7-A")
+
+    def test_first_scalar_returns_none_for_empty_series(self) -> None:
+        self.assertIsNone(
+            bet_optimization_ui._first_scalar(pd.Series(dtype=object))
+        )
+
+    def test_first_scalar_reads_list(self) -> None:
+        self.assertEqual(
+            bet_optimization_ui._first_scalar(["Version7-A", "Version6"]),
+            "Version7-A",
+        )
+
+    def test_first_scalar_reads_tuple(self) -> None:
+        self.assertEqual(
+            bet_optimization_ui._first_scalar(("Version7-A", "Version6")),
+            "Version7-A",
+        )
+
+    def test_first_scalar_preserves_scalar(self) -> None:
+        self.assertEqual(
+            bet_optimization_ui._first_scalar("Version7-A"),
+            "Version7-A",
+        )
+
+    def test_first_scalar_returns_none_for_none(self) -> None:
+        self.assertIsNone(bet_optimization_ui._first_scalar(None))
+
+    def test_first_scalar_reads_dataframe_by_position(self) -> None:
+        values = pd.DataFrame(
+            {"prediction_version": ["Version7-A"]},
+            index=[13],
+        )
+
+        self.assertEqual(bet_optimization_ui._first_scalar(values), "Version7-A")
+
+    def test_first_scalar_reads_numpy_array(self) -> None:
+        values = np.array(["Version7-A", "Version6"], dtype=object)
+
+        self.assertEqual(bet_optimization_ui._first_scalar(values), "Version7-A")
+
+    def test_prediction_version_keeps_nonzero_series_index_safe(self) -> None:
+        frame = pd.DataFrame(
+            {"prediction_version": ["Version7-A", "Version6"]},
+            index=[13, 26],
+        )
+
+        self.assertEqual(
+            bet_optimization_ui._prediction_version(frame),
+            "Version7-A",
+        )
 
 
 class Version7CStreamlitTest(unittest.TestCase):
@@ -264,6 +334,16 @@ class Version7CStreamlitTest(unittest.TestCase):
     def test_toto_ai_plan_manual_change_and_csv_have_no_screen_error(self) -> None:
         app = self._predicted_app()
         self.assertEqual(len(app.exception), 0)
+        latest_results = app.session_state["latest_prediction_results"].copy()
+        latest_results.index = pd.Index(
+            [13 * number for number in range(1, len(latest_results) + 1)]
+        )
+        app.session_state["latest_prediction_results"] = latest_results
+        app = app.run(timeout=25)
+        self.assertEqual(
+            list(app.session_state["latest_prediction_results"].index[:2]),
+            [13, 26],
+        )
         next(
             item
             for item in app.selectbox
@@ -297,6 +377,22 @@ class Version7CStreamlitTest(unittest.TestCase):
         self.assertGreaterEqual(
             sum("version7c" in str(item.key) for item in app.download_button),
             2,
+        )
+        self.assertTrue(
+            any(
+                item.label == "AI提案 推定Coverage"
+                and str(item.value).endswith("%")
+                for item in app.metric
+            )
+        )
+        self.assertTrue(
+            any(item.key == "version7c_backtest" for item in app.button)
+        )
+        self.assertTrue(
+            any(
+                item.key == "version7c_backtest_version"
+                for item in app.selectbox
+            )
         )
 
         single_type = next(

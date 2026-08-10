@@ -6,6 +6,7 @@ import hashlib
 import json
 from typing import Any, Mapping, Optional, Sequence
 
+import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -739,15 +740,41 @@ def _round_label(frame: pd.DataFrame) -> str:
     return f"第{positive[-1]}回" if positive else "手入力"
 
 
+def _first_scalar(values: Any) -> Any:
+    """先頭値を、pandasのindex labelに依存せず位置で取得する。"""
+
+    if values is None:
+        return None
+    if isinstance(values, pd.DataFrame):
+        return None if values.empty else values.iloc[0, 0]
+    if isinstance(values, pd.Series):
+        return None if values.empty else values.iloc[0]
+    if isinstance(values, np.ndarray):
+        return None if values.size == 0 else values.reshape(-1).item(0)
+    if isinstance(values, (list, tuple)):
+        return next(iter(values), None)
+    return values
+
+
 def _prediction_version(frame: pd.DataFrame) -> str:
     if "prediction_version" not in frame.columns:
         return "Version7-A"
-    values = [
-        str(value)
-        for value in frame["prediction_version"]
-        if not pd.isna(value) and str(value).strip()
-    ]
-    return values[0] if values else "Version7-A"
+    values = frame["prediction_version"]
+    if isinstance(values, pd.DataFrame):
+        values = values.iloc[:, 0]
+    if isinstance(values, pd.Series):
+        values = values.loc[
+            values.notna() & values.astype(str).str.strip().ne("")
+        ]
+    first_value = _first_scalar(values)
+    if first_value is None:
+        return "Version7-A"
+    try:
+        if bool(pd.isna(first_value)):
+            return "Version7-A"
+    except (TypeError, ValueError):
+        return "Version7-A"
+    return str(first_value).strip() or "Version7-A"
 
 
 def _request_signature(
