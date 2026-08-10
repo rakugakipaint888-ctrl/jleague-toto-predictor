@@ -582,6 +582,64 @@ class Version7CBacktestTest(unittest.TestCase):
 
         self.assertEqual(result.evaluated_rounds, 2)
 
+    def test_round_requires_all_thirteen_valid_actual_results(self) -> None:
+        all_history = completed_history()
+        complete = all_history.loc[all_history["toto_round"] == 1701].copy()
+        cases = {
+            "twelve_rows": complete.iloc[:-1].copy(),
+            "empty": complete.assign(
+                actual_result=[""] + ["1"] * 12
+            ),
+            "none": complete.assign(
+                actual_result=[None] + ["1"] * 12
+            ),
+            "nan": complete.assign(
+                actual_result=[math.nan] + ["1"] * 12
+            ),
+            "invalid": complete.assign(
+                actual_result=["X"] + ["1"] * 12
+            ),
+        }
+
+        for name, history in cases.items():
+            with self.subTest(name=name):
+                result = backtest_bet_strategy(
+                    history,
+                    strategy="A",
+                    target="toto",
+                    prediction_version="Version7-A",
+                    double_count=0,
+                    triple_count=0,
+                    draw_candidate_threshold=0.25,
+                    draw_candidate_margin=0.05,
+                    payouts_by_round={
+                        1701: TotoPayouts(10_000, 1_000, 100)
+                    },
+                )
+
+                self.assertEqual(result.evaluated_rounds, 0)
+                self.assertEqual(result.evaluated_round_ids, ())
+                self.assertIsNone(result.full_hit_rate)
+                self.assertIsNone(result.total_payout_yen)
+                self.assertIsNone(result.profit_yen)
+                self.assertIsNone(result.roi)
+
+    def test_only_officially_verified_round_ids_are_evaluated(self) -> None:
+        result = backtest_bet_strategy(
+            completed_history(),
+            strategy="A",
+            target="toto",
+            prediction_version="Version7-A",
+            double_count=0,
+            triple_count=0,
+            draw_candidate_threshold=0.25,
+            draw_candidate_margin=0.05,
+            verified_round_ids=(1701,),
+        )
+
+        self.assertEqual(result.evaluated_rounds, 1)
+        self.assertEqual(result.evaluated_round_ids, (1701,))
+
     def test_strategy_backtest_counts_hits_stake_and_known_payout(self) -> None:
         history = completed_history()
         payouts = {

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, Sequence
 
 import pandas as pd
 
@@ -74,6 +74,7 @@ def backtest_bet_strategy(
     draw_candidate_threshold: float,
     draw_candidate_margin: float,
     payouts_by_round: Optional[Mapping[int, Any]] = None,
+    verified_round_ids: Optional[Sequence[int]] = None,
 ) -> BetStrategyBacktest:
     """開催回ごとに同じ配置ルールを適用し全試合Coverage的中を評価する。
 
@@ -112,6 +113,11 @@ def backtest_bet_strategy(
         selected["toto_match_number"], errors="coerce"
     )
     selected = selected.dropna(subset=["_round", "_match"])
+    if verified_round_ids is not None:
+        allowed_round_ids = {int(value) for value in verified_round_ids}
+        selected = selected.loc[
+            selected["_round"].astype(int).isin(allowed_round_ids)
+        ]
     if "prediction_date" in selected.columns:
         selected = selected.sort_values("prediction_date")
     selected = selected.drop_duplicates(
@@ -227,6 +233,7 @@ def compare_bet_strategies(
     draw_candidate_threshold: float,
     draw_candidate_margin: float,
     payouts_by_round: Optional[Mapping[int, Any]] = None,
+    verified_round_ids: Optional[Sequence[int]] = None,
 ) -> tuple[BetStrategyBacktest, ...]:
     specifications = (
         ("A：全試合シングル", 0, 0),
@@ -244,6 +251,7 @@ def compare_bet_strategies(
             draw_candidate_threshold=draw_candidate_threshold,
             draw_candidate_margin=draw_candidate_margin,
             payouts_by_round=payouts_by_round,
+            verified_round_ids=verified_round_ids,
         )
         for label, doubles, triples in specifications
     )

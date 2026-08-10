@@ -7,6 +7,7 @@ import inspect
 import os
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -20,6 +21,7 @@ from analysis import Version7AHistoryGenerationResult
 from bet_export import BET_PLAN_DISPLAY_COLUMNS
 from data_loader import CsvMatchDataSource
 from history_manager import (
+    TotoRound,
     TotoRoundLoadResult,
     TotoRoundSummary,
 )
@@ -80,6 +82,46 @@ def completed_history(version: str = "Version7-A") -> pd.DataFrame:
                 }
             )
     return pd.DataFrame(rows)
+
+
+def round_for_saved_history(
+    round_id: int,
+    *,
+    complete: bool = True,
+) -> TotoRound:
+    base = completed_round()
+    actuals = tuple(
+        (
+            "0"
+            if int(round_id) == 1702 and match_number == 1
+            else "1"
+        )
+        if complete
+        else None
+        for match_number in range(1, 14)
+    )
+    return replace(
+        base,
+        round_id=int(round_id),
+        matches=tuple(
+            replace(
+                match,
+                round_id=int(round_id),
+                actual_result=actuals[index],
+            )
+            for index, match in enumerate(base.matches)
+        ),
+    )
+
+
+def saved_history_round_result(round_id: int) -> TotoRoundLoadResult:
+    toto_round = round_for_saved_history(int(round_id))
+    return TotoRoundLoadResult(
+        toto_round=toto_round,
+        source_name="テスト",
+        status="loaded",
+        message="読み込みました。",
+    )
 
 
 def display_probability_frame(*, include_draw_candidates: bool) -> pd.DataFrame:
@@ -542,15 +584,23 @@ class Version7CStreamlitTest(unittest.TestCase):
         self,
     ) -> None:
         self.history_frame = completed_history()
-        app = self._predicted_app()
-        next(
-            button for button in app.button if button.key == "version7c_optimize"
-        ).click()
-        app = app.run(timeout=25)
-        next(
-            button for button in app.button if button.key == "version7c_backtest"
-        ).click()
-        app = app.run(timeout=25)
+        with patch(
+            "history_manager.TotoHistoryManager.load_round",
+            side_effect=saved_history_round_result,
+        ):
+            app = self._predicted_app()
+            next(
+                button
+                for button in app.button
+                if button.key == "version7c_optimize"
+            ).click()
+            app = app.run(timeout=25)
+            next(
+                button
+                for button in app.button
+                if button.key == "version7c_backtest"
+            ).click()
+            app = app.run(timeout=25)
 
         results = app.session_state["version7c_backtest_results"]
         self.assertEqual(len(results), 3)
@@ -565,6 +615,78 @@ class Version7CStreamlitTest(unittest.TestCase):
                 == "実結果まで揃った対象開催回を確認できませんでした。"
                 for warning in app.warning
             )
+        )
+        self.assertEqual(len(app.exception), 0)
+        self.assertEqual(len(app.error), 0)
+
+    def test_unconfirmed_round_is_excluded_and_confirmed_past_round_is_evaluated(
+        self,
+    ) -> None:
+        all_history = completed_history()
+        confirmed = all_history.loc[
+            all_history["toto_round"] == 1701
+        ].copy()
+        confirmed["toto_round"] = 1628
+        unconfirmed = confirmed.copy()
+        unconfirmed["toto_round"] = 1645
+        # 見かけ上1/0/2が13件あっても、公式未確定なら信用しない。
+        self.history_frame = pd.concat(
+            [confirmed, unconfirmed],
+            ignore_index=True,
+        )
+        official_rounds = {
+            1628: round_for_saved_history(1628),
+            1645: round_for_saved_history(1645, complete=False),
+        }
+
+        def load_round(round_id):
+            toto_round = official_rounds.get(int(round_id))
+            return TotoRoundLoadResult(
+                toto_round=toto_round,
+                source_name="テスト",
+                status="loaded" if toto_round is not None else "error",
+                message="読み込みました。",
+            )
+
+        with patch(
+            "history_manager.TotoHistoryManager.load_round",
+            side_effect=load_round,
+        ):
+            app = self._predicted_app()
+            next(
+                button
+                for button in app.button
+                if button.key == "version7c_optimize"
+            ).click()
+            app = app.run(timeout=25)
+            next(
+                button
+                for button in app.button
+                if button.key == "version7c_backtest"
+            ).click()
+            app = app.run(timeout=25)
+
+        generation = app.session_state[
+            "version7c_version7a_history_generation"
+        ]
+        results = app.session_state["version7c_backtest_results"]
+        self.assertEqual(generation.target_round_ids, (1628,))
+        self.assertEqual(generation.failed_round_ids, (1645,))
+        self.assertEqual(generation.actual_result_count, 13)
+        self.assertTrue(all(item.evaluated_rounds == 1 for item in results))
+        self.assertTrue(
+            all(item.evaluated_round_ids == (1628,) for item in results)
+        )
+        self.assertTrue(
+            any(
+                warning.value
+                == "第1645回は公式実結果が未確定または取得できないため、"
+                "バックテスト対象外です。"
+                for warning in app.warning
+            )
+        )
+        self.assertTrue(
+            any("評価対象開催回：第1628回" == item.value for item in app.caption)
         )
         self.assertEqual(len(app.exception), 0)
         self.assertEqual(len(app.error), 0)
@@ -661,19 +783,23 @@ class Version7CStreamlitTest(unittest.TestCase):
 
     def test_version6_strategy_backtest_still_renders(self) -> None:
         self.history_frame = completed_history("Version6")
-        app = self._predicted_app()
-        next(
-            item
-            for item in app.selectbox
-            if item.key == "version7c_backtest_version"
-        ).select("Version6")
-        app = app.run(timeout=25)
-        next(
-            button
-            for button in app.button
-            if button.key == "version7c_backtest"
-        ).click()
-        app = app.run(timeout=25)
+        with patch(
+            "history_manager.TotoHistoryManager.load_round",
+            side_effect=saved_history_round_result,
+        ):
+            app = self._predicted_app()
+            next(
+                item
+                for item in app.selectbox
+                if item.key == "version7c_backtest_version"
+            ).select("Version6")
+            app = app.run(timeout=25)
+            next(
+                button
+                for button in app.button
+                if button.key == "version7c_backtest"
+            ).click()
+            app = app.run(timeout=25)
 
         results = app.session_state["version7c_backtest_results"]
         self.assertEqual(len(results), 3)
@@ -694,8 +820,15 @@ class Version7CStreamlitTest(unittest.TestCase):
             version6_history["toto_round"] == 1701
         ].copy()
         version6_history["toto_round"] = 1548
-        self.history_frame = version6_history
         toto_round = completed_round()
+        official_actuals = {
+            match.match_number: match.actual_result
+            for match in toto_round.matches
+        }
+        version6_history["actual_result"] = version6_history[
+            "toto_match_number"
+        ].map(official_actuals)
+        self.history_frame = version6_history
         loaded = TotoRoundLoadResult(
             toto_round=toto_round,
             source_name="テスト",

@@ -13,6 +13,7 @@ import streamlit as st
 from analysis import (
     Version7AHistoryGenerationResult,
     ensure_version7a_strategy_history,
+    reconcile_saved_strategy_history,
     reconcile_saved_version7b_strategy_history,
 )
 
@@ -450,6 +451,7 @@ def _render_strategy_backtest(
             try:
                 generation_result = None
                 version7b_result = None
+                verified_round_ids: tuple[int, ...] = ()
                 if version == VERSION7A_MODEL_VERSION:
                     progress_area = st.empty()
 
@@ -478,6 +480,7 @@ def _render_strategy_backtest(
                     st.session_state[
                         "version7c_version7a_history_generation_request"
                     ] = signature
+                    verified_round_ids = generation_result.target_round_ids
                     for message in generation_result.messages:
                         st.warning(message)
                 elif version == VERSION7B_MODEL_VERSION:
@@ -492,7 +495,18 @@ def _render_strategy_backtest(
                     st.session_state[
                         "version7c_version7b_history_reconciliation_request"
                     ] = signature
+                    verified_round_ids = version7b_result.evaluable_round_ids
                     for message in version7b_result.messages:
+                        st.warning(message)
+                else:
+                    verification_result = reconcile_saved_strategy_history(
+                        prediction_history_manager=prediction_history_manager,
+                        history_manager=history_manager,
+                        prediction_version=version,
+                    )
+                    history = prediction_history_manager.load()
+                    verified_round_ids = verification_result.evaluable_round_ids
+                    for message in verification_result.messages:
                         st.warning(message)
                 payouts = get_saved_toto_payouts(
                     history_manager,
@@ -508,9 +522,16 @@ def _render_strategy_backtest(
                     draw_candidate_threshold=settings["draw_threshold"],
                     draw_candidate_margin=settings["draw_margin"],
                     payouts_by_round=payouts,
+                    verified_round_ids=verified_round_ids,
                 )
                 st.session_state["version7c_backtest_results"] = results
                 st.session_state["version7c_backtest_request"] = signature
+                st.session_state["version7c_backtest_round_ids"] = (
+                    verified_round_ids
+                )
+                st.session_state["version7c_backtest_round_ids_request"] = (
+                    signature
+                )
             except BetOptimizationError as error:
                 st.error(str(error))
             except (OSError, TypeError, ValueError):
@@ -542,9 +563,25 @@ def _render_strategy_backtest(
                 generation_result.generated_match_count,
             )
             st.caption(
-                "actual_result紐付け："
+                "公式確認済みactual_result："
                 f"{generation_result.actual_result_count}件"
             )
+            if generation_result.target_round_ids:
+                st.caption(
+                    "評価対象開催回："
+                    + "、".join(
+                        f"第{round_id}回"
+                        for round_id in generation_result.target_round_ids
+                    )
+                )
+            if generation_result.failed_round_ids:
+                st.caption(
+                    "評価対象外開催回："
+                    + "、".join(
+                        f"第{round_id}回"
+                        for round_id in generation_result.failed_round_ids
+                    )
+                )
 
         version7b_result = st.session_state.get(
             "version7c_version7b_history_reconciliation"
@@ -564,6 +601,10 @@ def _render_strategy_backtest(
             )
 
         results = st.session_state.get("version7c_backtest_results")
+        evaluated_round_ids = st.session_state.get(
+            "version7c_backtest_round_ids",
+            (),
+        )
         if (
             isinstance(results, tuple)
             and st.session_state.get("version7c_backtest_request") == signature
@@ -587,6 +628,20 @@ def _render_strategy_backtest(
                 else:
                     st.warning("実結果まで揃った対象開催回を確認できませんでした。")
             else:
+                if (
+                    st.session_state.get(
+                        "version7c_backtest_round_ids_request"
+                    )
+                    == signature
+                    and evaluated_round_ids
+                ):
+                    st.caption(
+                        "戦略A/B/Cの評価対象："
+                        + "、".join(
+                            f"第{int(round_id)}回"
+                            for round_id in evaluated_round_ids
+                        )
+                    )
                 st.dataframe(
                     backtest_frame(results),
                     width="stretch",

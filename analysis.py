@@ -84,6 +84,7 @@ class Version7BHistoryReconciliationResult:
     evaluable_round_ids: tuple[int, ...]
     reconciled_round_ids: tuple[int, ...]
     actual_result_count: int
+    excluded_round_ids: tuple[int, ...] = ()
     messages: tuple[str, ...] = ()
 
 
@@ -185,6 +186,50 @@ def _actual_result_count(
     return sum(
         normalize_toto_label(value) in ("1", "0", "2")
         for value in selected["actual_result"]
+    )
+
+
+def _history_has_official_results(
+    history: pd.DataFrame,
+    prediction_version: str,
+    toto_round: TotoRound,
+) -> bool:
+    """保存履歴13件が、取得済み公式実結果と試合番号単位で一致するか返す。"""
+
+    if not toto_round.is_complete or not toto_round.is_jleague_round:
+        return False
+    selected = _history_for_version(history, prediction_version)
+    if selected.empty:
+        return False
+    selected = selected.loc[
+        selected["_round"].astype(int) == int(toto_round.round_id)
+    ]
+    required_numbers = set(range(1, 14))
+    saved_actuals = {
+        int(row["_match"]): normalize_toto_label(row.get("actual_result"))
+        for _, row in selected.iterrows()
+        if int(row["_match"]) in required_numbers
+    }
+    official_actuals = {
+        int(match.match_number): normalize_toto_label(match.actual_result)
+        for match in toto_round.matches
+        if int(match.match_number) in required_numbers
+    }
+    return bool(
+        set(saved_actuals) == required_numbers
+        and set(official_actuals) == required_numbers
+        and all(
+            official_actuals[number] in ("1", "0", "2")
+            and saved_actuals[number] == official_actuals[number]
+            for number in required_numbers
+        )
+    )
+
+
+def _backtest_excluded_message(round_id: int) -> str:
+    return (
+        f"第{int(round_id)}回は公式実結果が未確定または取得できないため、"
+        "バックテスト対象外です。"
     )
 
 
@@ -339,24 +384,19 @@ def ensure_version7a_strategy_history(
     rounds_by_id: dict[int, TotoRound] = {}
     failed_round_ids = []
     messages = []
-    missing_candidate_ids = [
-        round_id
-        for round_id in candidate_ids
-        if round_id not in complete_version7a
-    ]
-    for index, round_id in enumerate(missing_candidate_ids, start=1):
+    # 保存CSVに1/0/2が13件あっても、それだけでは公式実結果とみなさない。
+    # 候補回は既存Version7-Aの完成状態にかかわらず、必ず公式開催回と照合する。
+    for index, round_id in enumerate(candidate_ids, start=1):
         if progress_callback is not None:
             progress_callback(
                 index - 1,
-                len(missing_candidate_ids),
+                len(candidate_ids),
                 f"第{round_id}回の公式実結果を確認しています。",
             )
         toto_round = _load_completed_round(history_manager, round_id)
         if toto_round is None:
             failed_round_ids.append(round_id)
-            messages.append(
-                f"第{round_id}回は公式13試合・実結果を確認できませんでした。"
-            )
+            messages.append(_backtest_excluded_message(round_id))
             continue
         rounds_by_id[round_id] = toto_round
 
@@ -372,7 +412,7 @@ def ensure_version7a_strategy_history(
     verified_target_ids = [
         round_id
         for round_id in candidate_ids
-        if round_id in complete_version7a or round_id in rounds_by_id
+        if round_id in rounds_by_id
     ]
     rounds_to_generate = [
         rounds_by_id[round_id]
@@ -462,6 +502,22 @@ def ensure_version7a_strategy_history(
         final_history = prediction_history_manager.load()
     except (OSError, TypeError, ValueError):
         final_history = pd.DataFrame()
+
+    # 既存履歴の見かけ上有効な値も、公式値と不一致なら公式値でのみ再照合する。
+    for round_id in verified_target_ids:
+        toto_round = rounds_by_id[round_id]
+        if _history_has_official_results(
+            final_history,
+            VERSION7A_MODEL_VERSION,
+            toto_round,
+        ):
+            continue
+        if prediction_history_manager.reconcile_actual_results(toto_round):
+            try:
+                final_history = prediction_history_manager.load()
+            except (OSError, TypeError, ValueError):
+                final_history = pd.DataFrame()
+
     final_complete_ids = set(
         complete_prediction_history_round_ids(
             final_history,
@@ -472,7 +528,20 @@ def ensure_version7a_strategy_history(
         round_id
         for round_id in verified_target_ids
         if round_id in final_complete_ids
+        and _history_has_official_results(
+            final_history,
+            VERSION7A_MODEL_VERSION,
+            rounds_by_id[round_id],
+        )
     )
+    for round_id in verified_target_ids:
+        if round_id in final_target_ids or round_id in failed_round_ids:
+            continue
+        failed_round_ids.append(round_id)
+        messages.append(
+            f"第{round_id}回の保存actual_resultを公式実結果と照合できないため、"
+            "バックテスト対象外です。"
+        )
     return Version7AHistoryGenerationResult(
         target_round_ids=final_target_ids,
         generated_round_ids=tuple(generated_round_ids),
@@ -487,13 +556,13 @@ def ensure_version7a_strategy_history(
     )
 
 
-def reconcile_saved_version7b_strategy_history(
+def reconcile_saved_strategy_history(
     *,
     prediction_history_manager: PredictionHistoryManager,
     history_manager: TotoHistoryManager,
-    prediction_version: str = VERSION7B_MODEL_VERSION,
+    prediction_version: str,
 ) -> Version7BHistoryReconciliationResult:
-    """当時保存されたVersion7-Bだけへ公式実結果を照合する。"""
+    """保存済みVersionの開催回を公式実結果と照合し、評価可能回だけ返す。"""
 
     try:
         history = prediction_history_manager.load()
@@ -503,41 +572,72 @@ def reconcile_saved_version7b_strategy_history(
         history,
         prediction_version,
     )
-    complete_before = set(
-        complete_prediction_history_round_ids(history, prediction_version)
-    )
     reconciled_round_ids = []
+    evaluable_round_ids = []
+    excluded_round_ids = []
     messages = []
     for round_id in saved_round_ids:
-        if round_id in complete_before:
-            continue
         toto_round = _load_completed_round(history_manager, round_id)
         if toto_round is None:
-            messages.append(
-                f"第{round_id}回の公式実結果を確認できませんでした。"
-            )
+            excluded_round_ids.append(round_id)
+            messages.append(_backtest_excluded_message(round_id))
             continue
+
+        if _history_has_official_results(
+            history,
+            prediction_version,
+            toto_round,
+        ):
+            evaluable_round_ids.append(round_id)
+            continue
+
         if prediction_history_manager.reconcile_actual_results(toto_round):
             reconciled_round_ids.append(round_id)
+        try:
+            history = prediction_history_manager.load()
+        except (OSError, TypeError, ValueError):
+            history = pd.DataFrame()
+        if _history_has_official_results(
+            history,
+            prediction_version,
+            toto_round,
+        ):
+            evaluable_round_ids.append(round_id)
+            continue
 
-    try:
-        final_history = prediction_history_manager.load()
-    except (OSError, TypeError, ValueError):
-        final_history = pd.DataFrame()
-    evaluable_round_ids = complete_prediction_history_round_ids(
-        final_history,
-        prediction_version,
-    )
+        excluded_round_ids.append(round_id)
+        messages.append(
+            f"第{round_id}回の保存actual_resultを公式実結果と照合できないため、"
+            "バックテスト対象外です。"
+        )
+
+    evaluable_round_ids_tuple = tuple(evaluable_round_ids)
     return Version7BHistoryReconciliationResult(
         saved_round_ids=saved_round_ids,
-        evaluable_round_ids=evaluable_round_ids,
+        evaluable_round_ids=evaluable_round_ids_tuple,
         reconciled_round_ids=tuple(reconciled_round_ids),
         actual_result_count=_actual_result_count(
-            final_history,
+            history,
             prediction_version,
-            evaluable_round_ids,
+            evaluable_round_ids_tuple,
         ),
+        excluded_round_ids=tuple(excluded_round_ids),
         messages=tuple(messages),
+    )
+
+
+def reconcile_saved_version7b_strategy_history(
+    *,
+    prediction_history_manager: PredictionHistoryManager,
+    history_manager: TotoHistoryManager,
+    prediction_version: str = VERSION7B_MODEL_VERSION,
+) -> Version7BHistoryReconciliationResult:
+    """当時保存されたVersion7-Bだけを公式実結果と照合する。"""
+
+    return reconcile_saved_strategy_history(
+        prediction_history_manager=prediction_history_manager,
+        history_manager=history_manager,
+        prediction_version=prediction_version,
     )
 
 

@@ -11,13 +11,14 @@ import pandas as pd
 from analysis import (
     build_analysis_tables,
     ensure_version7a_strategy_history,
+    reconcile_saved_strategy_history,
     reconcile_saved_version7b_strategy_history,
     version7a_history_records,
 )
 from backtest import run_backtest
 from bet_evaluation import compare_bet_strategies
 from draw_predictor import DEFAULT_DRAW_SETTINGS
-from history_manager import TotoRoundLoadResult, TotoRoundSummary
+from history_manager import TotoRound, TotoRoundLoadResult, TotoRoundSummary
 from prediction_history import PredictionHistoryManager
 from tests.test_backtest import completed_round, historical_matches
 
@@ -54,6 +55,43 @@ class SingleRoundHistoryManager:
 
     def load_saved_round(self, round_id):
         return self.toto_round if int(round_id) == self.toto_round.round_id else None
+
+
+class MappedRoundHistoryManager:
+    def __init__(self, rounds):
+        self.rounds = {
+            int(round_id): toto_round
+            for round_id, toto_round in rounds.items()
+        }
+
+    def load_round(self, round_id):
+        toto_round = self.rounds.get(int(round_id))
+        return TotoRoundLoadResult(
+            toto_round=toto_round,
+            source_name="テスト",
+            status="loaded" if toto_round is not None else "error",
+            message="読み込みました。" if toto_round is not None else "対象外",
+        )
+
+
+def round_with_id(
+    round_id: int,
+    *,
+    actual_results: tuple[str | None, ...],
+) -> TotoRound:
+    base = completed_round()
+    return replace(
+        base,
+        round_id=int(round_id),
+        matches=tuple(
+            replace(
+                match,
+                round_id=int(round_id),
+                actual_result=actual_results[index],
+            )
+            for index, match in enumerate(base.matches)
+        ),
+    )
 
 
 def history_frame() -> pd.DataFrame:
@@ -286,6 +324,121 @@ class AnalysisTest(unittest.TestCase):
                 13,
             )
             self.assertNotIn("Version7-C", set(after["prediction_version"]))
+
+    def test_unconfirmed_round_is_excluded_even_when_saved_labels_look_valid(
+        self,
+    ) -> None:
+        confirmed_round = completed_round()
+        unconfirmed_round = round_with_id(
+            1645,
+            actual_results=(None,) * 13,
+        )
+        source_matches = historical_matches()
+        confirmed_records = version7a_history_records(
+            confirmed_round,
+            source_matches,
+            settings=DEFAULT_DRAW_SETTINGS,
+            generated_at=run_backtest(
+                confirmed_round,
+                source_matches,
+            ).generated_at,
+        )
+        unconfirmed_records = [
+            replace(
+                record,
+                toto_round=1645,
+                actual_result="1",
+                hit=record.prediction == "1",
+            )
+            for record in confirmed_records
+        ]
+        history_manager = MappedRoundHistoryManager(
+            {
+                confirmed_round.round_id: confirmed_round,
+                1645: unconfirmed_round,
+            }
+        )
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            manager = PredictionHistoryManager(
+                Path(temporary_directory) / "prediction_history.csv"
+            )
+            self.assertTrue(
+                manager.save_records(
+                    [*confirmed_records, *unconfirmed_records]
+                )
+            )
+            result = ensure_version7a_strategy_history(
+                prediction_history_manager=manager,
+                history_manager=history_manager,
+                settings=DEFAULT_DRAW_SETTINGS,
+            )
+            saved = manager.load()
+
+        self.assertEqual(result.target_round_ids, (1548,))
+        self.assertEqual(result.failed_round_ids, (1645,))
+        self.assertEqual(result.actual_result_count, 13)
+        self.assertTrue(
+            any(
+                "第1645回" in message and "対象外" in message
+                for message in result.messages
+            )
+        )
+        compared = compare_bet_strategies(
+            saved,
+            target="toto",
+            prediction_version="Version7-A",
+            double_count=3,
+            triple_count=0,
+            draw_candidate_threshold=0.25,
+            draw_candidate_margin=0.05,
+            verified_round_ids=result.target_round_ids,
+        )
+        self.assertTrue(
+            all(item.evaluated_round_ids == (1548,) for item in compared)
+        )
+
+    def test_version6_unconfirmed_round_is_not_evaluable(self) -> None:
+        unconfirmed_round = round_with_id(
+            1645,
+            actual_results=(None,) * 13,
+        )
+        records = [
+            {
+                "toto_round": 1645,
+                "toto_match_number": match_number,
+                "prediction_version": "Version6",
+                "prediction": "1",
+                "probability_1": 0.6,
+                "probability_0": 0.2,
+                "probability_2": 0.2,
+                "actual_result": "1",
+            }
+            for match_number in range(1, 14)
+        ]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            manager = PredictionHistoryManager(
+                Path(temporary_directory) / "prediction_history.csv"
+            )
+            self.assertTrue(manager.save_records(records))
+            result = reconcile_saved_strategy_history(
+                prediction_history_manager=manager,
+                history_manager=MappedRoundHistoryManager(
+                    {1645: unconfirmed_round}
+                ),
+                prediction_version="Version6",
+            )
+
+        self.assertEqual(result.saved_round_ids, (1645,))
+        self.assertEqual(result.evaluable_round_ids, ())
+        self.assertEqual(result.excluded_round_ids, (1645,))
+        self.assertEqual(result.actual_result_count, 0)
+        self.assertTrue(
+            any(
+                "第1645回" in message and "対象外" in message
+                for message in result.messages
+            )
+        )
 
     def test_version7b_reconciles_only_saved_predictions(self) -> None:
         toto_round = completed_round()
