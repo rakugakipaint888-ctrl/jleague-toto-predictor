@@ -12,8 +12,8 @@ from metrics import normalize_toto_outcome
 from parameter_manager import (
     ActiveVersion7BSettings,
     Version7BParameters,
-    prediction_settings_snapshot,
 )
+from prediction_settings_snapshot import prediction_settings_snapshot
 from data_loader import JAPAN_TIMEZONE
 
 
@@ -68,6 +68,28 @@ class Version75StabilityTest(unittest.TestCase):
         for value in snapshot["model_parameters"].values():
             values = value if isinstance(value, list) else [value]
             self.assertTrue(all(math.isfinite(float(item)) for item in values))
+
+    def test_parameter_manager_keeps_the_legacy_snapshot_import(self) -> None:
+        from parameter_manager import (
+            prediction_settings_snapshot as legacy_snapshot,
+        )
+
+        active = ActiveVersion7BSettings(
+            parameters=Version7BParameters(),
+            adopted=False,
+            draw_override=False,
+        )
+        direct = prediction_settings_snapshot(
+            active,
+            draw_settings=DEFAULT_DRAW_SETTINGS,
+            model_options={"use_elo": True},
+        )
+        legacy = legacy_snapshot(
+            active,
+            draw_settings=DEFAULT_DRAW_SETTINGS,
+            model_options={"use_elo": True},
+        )
+        self.assertEqual(legacy, direct)
 
 
 if __name__ == "__main__":

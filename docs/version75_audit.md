@@ -31,6 +31,9 @@ AST import graphに循環はない。通常のPython importで主要moduleを読
 残った既知問題を検査し、signature・module identity・dataclass fieldsが一致しない場合
 だけreloadする。これは無条件reloadではなく、過去の部分初期化・signature不一致対策の
 ためVersion7.5では維持する。UI moduleからモデルmoduleへの逆importは追加していない。
+履歴用の新規設定Snapshotは`prediction_settings_snapshot.py`に分離した。Streamlit
+Cloudのhot rerun中に旧`parameter_manager`が残っても、新規symbolの直接importで起動を
+止めない。旧import入口は委譲関数として維持する。
 
 ## pandas・Session State監査
 

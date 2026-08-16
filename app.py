@@ -55,9 +55,9 @@ from model_pipeline import (
 )
 from parameter_manager import (
     load_active_version7b_settings,
-    prediction_settings_snapshot,
     to_runtime_settings,
 )
+from prediction_settings_snapshot import prediction_settings_snapshot
 from prediction import (
     create_reason,
     get_confidence_label,
