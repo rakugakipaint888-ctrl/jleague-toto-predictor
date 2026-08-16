@@ -38,8 +38,118 @@ J1・J2・J3の試合を対象に、直近成績、会場別成績、順位表�
 - Version7-Cのtoto／mini toto A・B買い目最適化
 - ダブル数・トリプル数指定、口数・購入金額・Coverageの即時計算
 - AI提案後の手動調整、試合別／全組み合わせCSV、買い目戦略比較
+- Version8-Aの実戦予測run、設定Snapshot、AI推奨／実購入、公式結果・払戻の分離保存
+- 実戦履歴サマリー、13試合詳細、購入記録、公式結果更新、3階層CSV export
 - 公式データ → CSV → 手入力の自動切替
 - 補正別の欠損フォールバックとVersion4予測への最終フォールバック
+
+## Version8全体構想とVersion8-A
+
+Version8は、実戦時に保存した正確な履歴を土台に、次の3段階で開発します。
+
+1. **Version8-A：実戦データ蓄積基盤**
+2. **Version8-B：モデル診断・異常検知**
+3. **Version8-C：AIによる改善提案**
+
+今回のVersion8-Aは保存基盤だけを追加するReleaseです。モデル診断、異常検知、
+AI改善提案、自動再最適化、設定の自動採用は実装しません。通常予想、Version7-A/B、
+Version7-C買い目最適化の計算式と結果は変更しません。
+
+### 実戦履歴とprediction_run_id
+
+「実戦履歴」タブの「実戦予測として保存」を押した時点で、公式開催回の13試合、
+予測日時、使用Version、フル精度P(1)・P(0)・P(2)、本命、予想スコア、期待得点、Elo、
+引分候補、引分候補閾値、設定Snapshotを保存します。後から現在モデルで過去確率を
+再計算・上書きしません。
+
+1回の明示的保存には次の一意IDを付けます。同じ開催回で再予測した場合も別runとして
+保存でき、同じ画面予測に対するStreamlit再実行やボタン連打は同じrunへ束ねます。
+
+```text
+run_YYYYMMDDTHHMMSSffffff_<UUID4の32桁hex>
+```
+
+既存`prediction_history.csv`はVersion別バックテスト履歴としてそのまま維持し、
+Version8-Aは役割別の次の実行時CSVを使います。
+
+- `data/history/live_round_history.csv`：開催回run、設定Snapshot、状態、評価、公式払戻
+- `data/history/live_match_history.csv`：runごとの13試合予測と、後日追記する公式結果
+- `data/history/live_bet_history.csv`：AI推奨／実購入の買い目、Coverage、金額、ROI
+
+3ファイルはGit管理対象外です。保存は一時ファイルへ正常に書いてから原子的に置換し、
+空・欠損・破損・列不足の既存ファイルを空データで上書きしません。既存履歴形式を変更・
+移行しないため、Version8-A導入時に旧データを削除しません。
+
+### 予測時点の設定Snapshot
+
+設定Snapshotは安定順序JSONで、使用Version、採用有無・日時、Version7-Bモデル係数、
+Version7-A/B引分係数、引分候補閾値、Elo・会場別・直近・順位補正の画面スイッチ、予測日時を
+保存します。買い目設定は予測後に変わり得るため予測Snapshotへ後付けせず、買い目履歴側に
+対象商品、ダブル/トリプル数、口数、予定購入額、Coverage、Draw閾値、選択を固定します。
+
+採用中のVersion7-B係数と同じSession内の最適化結果が完全一致すると確認できた場合だけ、
+`optimization_run_id`、Best Trial、Best Scoreを関連付けます。確認できない最適化情報は
+推測で付けません。
+
+### AI推奨買い目と実購入買い目
+
+Version7-Cで生成したAI案は`recommended=True, purchased=False`として保存します。
+「この買い目を実際に購入したとして記録」を押した場合だけ、購入日時、実購入金額、
+手動変更後の最終買い目を別の`purchased=True`行へ保存します。AI推奨を実購入や実利益として
+扱いません。外部totoサービスへの接続、決済、自動購入はありません。
+
+買い目履歴は`toto`、`mini toto A`、`mini toto B`に対応し、試合ごとの最終選択、
+single/double/triple、口数、予定/実購入額、Coverage、Draw Inclusion Score・判定・
+Coverage loss、0を含む試合数、0を含む口数を保持します。
+
+### 公式結果、払戻、ROI
+
+結果更新は既存の`toto公式 → 公式由来の保存CSV`経路だけを利用し、更新できる列を
+`actual_result`、実スコア、確認日時、公式払戻など結果確定後の項目へ限定します。
+予測本命や確率からactualを作らず、既存確定結果と異なる値は競合エラーとして上書きしません。
+
+開催回状態は`predicted`、`purchased`、`pending_result`、`result_confirmed`、`evaluated`を
+区別します。一部結果や未確定結果を外れ・払戻0・ROI -100%として扱いません。13試合すべての
+公式`1/0/2`を確認してから、本命の総的中数と1/0/2別的中数、各買い目の試合別Coverage、
+toto全13試合、mini A/B各5試合の的中を評価します。
+
+公式toto 1～3等金をすべて確認できる場合、13/12/11的中券数を全口展開せず集計します。
+実購入とシミュレーションは次の別列です。
+
+```text
+actual_roi     = actual_return_yen / actual_purchase_amount_yen
+simulation_roi = simulation_return_yen / planned_purchase_amount_yen
+```
+
+未購入、結果未確定、払戻不明、分母0はN/Aです。現行の公式取得経路はmini toto払戻を
+保存しないため、mini A/Bの的中は判定しても払戻・収支・ROIを推測しません。
+
+### 実戦履歴画面とCSV export
+
+実戦履歴一覧では開催回、予測日時、Version、商品、購入有無・金額、結果状態、本命的中数、
+買い目的中、実払戻、実収支、実ROIを確認できます。runを選ぶと、13試合の対戦カード、
+P(1)/P(0)/P(2)、本命、引分候補、実結果、本命的中、AI推奨、実購入、実結果Coverageを
+表示します。開催回サマリー、試合単位、買い目単位をそれぞれCSVでdownloadできます。
+
+### Version8-B/Cへのデータ引継ぎ
+
+P(1)/P(0)/P(2)、本命、実結果、リーグ、season、開催日時、P(0)、引分候補、候補閾値、
+0を買い目へ含めたか、0を実際にカバーしたかを保存するため、Version8-Bは将来Brier、
+Log Loss、Calibration、1/0/2別、引分Precision/Recall/F1、リーグ別、直近N開催を
+当時の予測から計算できます。Version8-Cも同じ不変履歴を参照できますが、Version8-Aでは
+診断・劣化判定・改善提案・モデル変更を実行しません。
+
+詳細な必須/任意列、不変hash、結果更新、重複制御、ROI契約は
+[`docs/version8a_live_history.md`](docs/version8a_live_history.md)を参照してください。
+
+### Version8-Aの既知の制限
+
+- Version7-A/Bは独立した「引分信頼度」を出力していないため、その列は推測せず空欄
+- mini toto A/Bの公式払戻を既存経路から取得できず、金額・収支・ROIはN/A
+- 公式サイト障害時の結果更新は、公式由来の保存CSVにある範囲まで
+- 個人用の単一Streamlit processを前提とし、複数processをまたぐ排他lockは持たない
+- Version8-A以前の予測を現在モデルで「当時の実戦予測」として遡及生成しない
+- Version7-B旧履歴は従来の安全仕様を維持し、当時保存された履歴がある場合だけ評価
 
 ## Version7.5
 
@@ -1094,6 +1204,17 @@ Version7-B設定を採用した通常予想では、Version4～Version7-A列を�
 - `version7b_poisson_draw_probability` / `version7b_adjusted_draw_probability`
 - `version7b_prediction_changed`
 
+Version8-Aでは画面用の小数1桁%を変更せず、実戦保存用の次の列を予想結果へ追加します。
+
+- `league`
+- `live_probability_1` / `live_probability_0` / `live_probability_2`
+- `draw_candidate_threshold`
+- `live_home_elo` / `live_away_elo` / `live_elo_difference`
+- `live_home_expected_goals` / `live_away_expected_goals`
+
+`live_probability_*`は予測時点の最終3クラス確率をフル精度で保持するための列です。
+Version7-Cは従来どおり表示用`1`・`0`・`2`を使うため、買い目とCoverageは変わりません。
+
 `prediction_version`が`Version7-B`の行だけ、予想履歴にもVersion7-Bを5番目の独立
 Versionとして保存します。既存のVersion7-A行をVersion7-B値で上書きしません。
 
@@ -1144,6 +1265,8 @@ Uncertainty／Double／Triple Score、Draw Inclusion Score・判定・Coverage�
 ├── bet_export.py             # 試合別・全組み合わせCSV
 ├── bet_evaluation.py         # 買い目戦略バックテスト
 ├── bet_optimization_ui.py    # Version7-C買い目最適化タブ
+├── live_history.py           # Version8-A実戦履歴・不変保存・結果更新
+├── live_history_ui.py        # 実戦履歴・購入記録・詳細・CSV画面
 ├── data/
 │   ├── README.md             # matches.csvと実行時キャッシュの仕様
 │   ├── reference/            # 公式取得失敗時の2024～2025年結果CSV
@@ -1164,6 +1287,8 @@ Uncertainty／Double／Triple Score、Draw Inclusion Score・判定・Coverage�
 │   ├── test_version7b.py     # 4探索・時系列安全性・採用・Bootstrap
 │   ├── test_version7c.py     # 口数・配置・Coverage・CSV・戦略比較
 │   ├── test_version7c_streamlit.py # toto／mini・手動調整の画面統合
+│   ├── test_live_history.py # Version8-A保存・不変性・結果・ROI
+│   ├── test_live_history_streamlit.py # 実戦保存～購入～結果待ちE2E
 │   ├── test_data_loader.py   # 公式取得・履歴キャッシュ・フォールバック
 │   ├── test_elo_rating.py    # Elo式・補正・増分キャッシュ
 │   ├── test_prediction.py    # Version3ポアソン計算の回帰テスト
@@ -1203,8 +1328,9 @@ python -m pytest -q
 - Version7-C：確率に基づく区分配置、Coverage、手動調整、CSV、戦略比較
 - Version7.5：予測結果を変えない総点検、データ契約、pandas／Session State安全化、
   バックテスト監査、回帰Fixture、clean import、Streamlit E2E
-- Version7-D：買い目・モデルのより高度な最適化と安定性評価
-- Version8：AIによる重み自動調整・モデル改善提案
+- Version8-A：予測時点の実戦履歴、AI推奨／実購入、公式結果・払戻の不変保存基盤
+- Version8-B（予定）：保存済み実戦履歴によるモデル診断・異常検知
+- Version8-C（予定）：診断結果を根拠にしたAI改善提案
 - Version9：独自判断入力・AIコメント生成
 - Version10：note記事自動生成
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from datetime import datetime
 from typing import Any, Mapping, Optional, Sequence
 
 import numpy as np
@@ -60,7 +61,7 @@ from bet_optimizer import (
     plan_fingerprint,
     target_label,
 )
-from history_manager import get_saved_toto_payouts
+from history_manager import JAPAN_TIMEZONE, get_saved_toto_payouts
 from model_config import VERSION7A_MODEL_VERSION, VERSION7B_MODEL_VERSION
 
 
@@ -285,6 +286,9 @@ def _render_current_optimizer(
             )
             st.session_state["version7c_ai_plan"] = plan
             st.session_state["version7c_plan_request"] = request_signature
+            st.session_state["version7c_plan_generated_at"] = datetime.now(
+                JAPAN_TIMEZONE
+            )
             _initialize_manual_state(plan)
         except BetOptimizationError as error:
             st.session_state.pop("version7c_ai_plan", None)

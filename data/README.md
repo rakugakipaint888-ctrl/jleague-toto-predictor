@@ -56,6 +56,12 @@ Version6～Version7-Bは`data/cache/`、`data/history/`、`data/config/`を
 - `../history/prediction_history.csv`：開催回・試合番号・Version別の予想履歴と
   的中率、Brier Score、Log Loss、Calibration、的中期待値、ROI。Version7.5以後の
   新規履歴は引分候補、候補理由、予測時設定Snapshot、戦略バックテストcutoffも保存
+- `../history/live_round_history.csv`：Version8-Aの予測run、設定Snapshot、状態、
+  本命的中数、公式払戻の開催回サマリー
+- `../history/live_match_history.csv`：Version8-Aの予測時点のフル精度3クラス確率、
+  本命、期待得点、Elo、引分情報と、後日追記する公式実結果
+- `../history/live_bet_history.csv`：Version8-AのAI推奨と実購入を分離した最終買い目、
+  Coverage、Draw Inclusion、口数、予定/実購入額、simulation/actual ROI
 - `../history/version7a_optimization_history.csv`：実行日時、Trial数、時系列の
   Training／Validation期間・試合数、Best Score・係数、全体・引分指標、
   Version6比較、乱数seed

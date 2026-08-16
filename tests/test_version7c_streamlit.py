@@ -361,11 +361,11 @@ class Version7CStreamlitTest(unittest.TestCase):
             and tuple(element.value.columns) == BET_PLAN_DISPLAY_COLUMNS
         ]
 
-    def test_sidebar_shows_version75_app_release(self) -> None:
+    def test_sidebar_shows_version8a_app_release(self) -> None:
         app = AppTest.from_file(str(PROJECT_ROOT / "app.py")).run(timeout=25)
 
         self.assertTrue(
-            any(caption.value == "App Version: Version7.5" for caption in app.caption)
+            any(caption.value == "App Version: Version8-A" for caption in app.caption)
         )
         self.assertEqual(len(app.exception), 0)
 

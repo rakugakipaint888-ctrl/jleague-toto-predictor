@@ -121,7 +121,7 @@ class StreamlitAppTest(unittest.TestCase):
         self.assertEqual(len(app.error), 0)
         self.assertEqual(
             [tab.label for tab in app.tabs],
-            ["予想", "分析", "引分分析", "モデル最適化", "買い目最適化"],
+            ["予想", "分析", "引分分析", "モデル最適化", "買い目最適化", "実戦履歴"],
         )
         self.assertGreaterEqual(len(app.selectbox), 29)
         self.assertGreaterEqual(len(app.number_input), 53)
@@ -194,7 +194,13 @@ class StreamlitAppTest(unittest.TestCase):
             )
         )
         self.assertEqual(len(app.dataframe), 2)
-        self.assertEqual(len(app.download_button), 1)
+        self.assertEqual(
+            sum(
+                button.label == "予想結果をCSVで保存"
+                for button in app.download_button
+            ),
+            1,
+        )
 
         result_df = app.session_state["latest_prediction_results"]
         expected_csv_columns = {
@@ -436,7 +442,7 @@ class StreamlitAppTest(unittest.TestCase):
         self.assertEqual(len(app.error), 0)
         self.assertEqual(
             [tab.label for tab in app.tabs],
-            ["予想", "分析", "引分分析", "モデル最適化", "買い目最適化"],
+            ["予想", "分析", "引分分析", "モデル最適化", "買い目最適化", "実戦履歴"],
         )
         self.assertGreaterEqual(len(app.metric), 8)
         self.assertGreaterEqual(len(app.get("vega_lite_chart")), 5)
@@ -708,7 +714,13 @@ class StreamlitEloIntegrationTest(unittest.TestCase):
             result_on.iloc[0]["home_expected_before_elo"],
             result_on.iloc[0]["home_expected_after_elo"],
         )
-        self.assertEqual(len(app.download_button), 1)
+        self.assertEqual(
+            sum(
+                button.label == "予想結果をCSVで保存"
+                for button in app.download_button
+            ),
+            1,
+        )
         self.assertEqual(len(app.dataframe), 3)
 
         elo_toggle = next(

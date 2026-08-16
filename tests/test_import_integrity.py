@@ -34,6 +34,10 @@ VERSION7C_MODULES = (
     "bet_evaluation",
     "bet_optimization_ui",
 )
+VERSION8A_MODULES = (
+    "live_history",
+    "live_history_ui",
+)
 VERSION7C_IMPORT_GRAPH_MODULES = {
     "app",
     "analysis",
@@ -203,6 +207,27 @@ assert bet_optimization_ui.BetPlan is bet_optimizer.BetPlan
 assert bet_optimization_ui.BET_PLAN_DISPLAY_COLUMNS is bet_export.BET_PLAN_DISPLAY_COLUMNS
 print("Version7-C clean imports: OK")
 """]
+        )
+        completed = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        self.assertEqual(
+            completed.returncode,
+            0,
+            completed.stderr or completed.stdout,
+        )
+
+    def test_version8a_modules_import_in_one_clean_process(self) -> None:
+        script = "\n".join(
+            [
+                *(f"import {module}" for module in VERSION8A_MODULES),
+                'print("Version8-A clean imports: OK")',
+            ]
         )
         completed = subprocess.run(
             [sys.executable, "-c", script],

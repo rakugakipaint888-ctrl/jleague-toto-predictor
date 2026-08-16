@@ -40,6 +40,8 @@ from history_manager import (
     TotoHistoryManager,
     create_matches_from_toto_round,
 )
+from live_history import LiveHistoryManager
+from live_history_ui import render_live_history_tab
 from elo_rating import (
     EloCalculationResult,
     get_elo_cache_path,
@@ -634,7 +636,10 @@ st.title("⚽ Jリーグ toto予想")
     draw_analysis_tab,
     model_optimization_tab,
     bet_optimization_tab,
-) = st.tabs(["予想", "分析", "引分分析", "モデル最適化", "買い目最適化"])
+    live_history_tab,
+) = st.tabs(
+    ["予想", "分析", "引分分析", "モデル最適化", "買い目最適化", "実戦履歴"]
+)
 
 with prediction_tab:
 
@@ -1339,6 +1344,7 @@ with prediction_tab:
                         "toto_round": match["toto_round"],
                         "toto_match_number": match["toto_match_number"],
                         "prediction_version": active_version7b_settings.version_label,
+                        "league": context_category,
                         "actual_result": match["actual_result"],
                         "hit": (
                             draw_prediction.prediction == match["actual_result"]
@@ -1356,6 +1362,11 @@ with prediction_tab:
                         "1": active_percentages["1"],
                         "0": active_percentages["0"],
                         "2": active_percentages["2"],
+                        # Version8-Aの実戦履歴は表示用丸め値ではなく、予測時点の
+                        # 最終3クラス確率をフル精度で固定する。画面値は変更しない。
+                        "live_probability_1": draw_prediction.probabilities["1"],
+                        "live_probability_0": draw_prediction.probabilities["0"],
+                        "live_probability_2": draw_prediction.probabilities["2"],
                         "本命": draw_prediction.prediction,
                         "最高確率": round(
                             draw_prediction.top_probability * 100,
@@ -1365,6 +1376,9 @@ with prediction_tab:
                             "候補" if draw_prediction.is_draw_candidate else "—"
                         ),
                         "draw_candidate": draw_prediction.is_draw_candidate,
+                        "draw_candidate_threshold": (
+                            draw_candidate_threshold_percent / 100.0
+                        ),
                         "draw_candidate_reasons": "／".join(
                             draw_prediction.candidate_reasons
                         ),
@@ -1457,6 +1471,14 @@ with prediction_tab:
                             and match["active_away_elo"] is not None
                             else None
                         ),
+                        "live_home_elo": match["active_home_elo"],
+                        "live_away_elo": match["active_away_elo"],
+                        "live_elo_difference": (
+                            match["active_home_elo"] - match["active_away_elo"]
+                            if match["active_home_elo"] is not None
+                            and match["active_away_elo"] is not None
+                            else None
+                        ),
                         "elo_difference": (
                             round(match["elo_difference"], 2)
                             if match["elo_difference"] is not None
@@ -1510,6 +1532,12 @@ with prediction_tab:
                         "away_expected_after_version7b": round(
                             active_pipeline.expected_final.away,
                             4,
+                        ),
+                        "live_home_expected_goals": (
+                            active_pipeline.expected_final.home
+                        ),
+                        "live_away_expected_goals": (
+                            active_pipeline.expected_final.away
                         ),
                         "venue_adjustment_enabled": (
                             pipeline.venue_adjustment_enabled
@@ -1674,6 +1702,33 @@ with prediction_tab:
                 },
                 prediction_time=prediction_time,
                 strategy_backtest_cutoff_at=strategy_backtest_cutoff_at,
+            )
+            optimization_result = st.session_state.get(
+                "version7b_optimization_result"
+            )
+            if (
+                active_version7b_settings.adopted
+                and optimization_result is not None
+                and getattr(optimization_result, "best_parameters", None)
+                == active_version7b_settings.parameters
+            ):
+                best_trial = (
+                    optimization_result.ranking[0].trial_number
+                    if getattr(optimization_result, "ranking", ())
+                    else None
+                )
+                history_settings["optimization_reference"] = {
+                    "run_id": str(getattr(optimization_result, "run_id", "")),
+                    "best_trial": best_trial,
+                    "best_score": getattr(optimization_result, "best_score", None),
+                }
+            st.session_state["latest_prediction_settings_snapshot"] = dict(
+                history_settings
+            )
+            st.session_state["latest_prediction_generated_at"] = prediction_time
+            st.session_state["latest_prediction_toto_round"] = current_toto_round
+            st.session_state["latest_prediction_source_name"] = (
+                toto_round_result.source_name
             )
 
             if (
@@ -2099,4 +2154,11 @@ with bet_optimization_tab:
         history_manager=toto_history_manager,
         active_draw_settings=active_draw_settings,
         fallback_matches=match_data_result.completed_matches,
+    )
+
+
+with live_history_tab:
+    render_live_history_tab(
+        live_history_manager=LiveHistoryManager(),
+        history_manager=toto_history_manager,
     )
