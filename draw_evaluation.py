@@ -6,8 +6,13 @@ import math
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Sequence
 
-from draw_predictor import TOTO_OUTCOMES, normalize_three_way_probabilities
-from metrics import ModelMetrics, evaluate_model
+from draw_predictor import normalize_three_way_probabilities
+from metrics import (
+    TOTO_OUTCOMES,
+    ModelMetrics,
+    evaluate_model,
+    normalize_toto_outcome,
+)
 from model_config import (
     VERSION7A_ACCURACY_ALLOWANCE,
     VERSION7A_CALIBRATION_ALLOWANCE,
@@ -87,19 +92,7 @@ class DrawScore:
 def normalize_toto_label(value: Any) -> str:
     """文字列・整数・CSVの浮動小数から1/0/2を失わず復元する。"""
 
-    if value is None or isinstance(value, bool):
-        return ""
-    text = str(value).strip()
-    if text in TOTO_OUTCOMES:
-        return text
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return ""
-    if math.isfinite(number) and number.is_integer():
-        label = str(int(number))
-        return label if label in TOTO_OUTCOMES else ""
-    return ""
+    return normalize_toto_outcome(value)
 
 
 def _safe_divide(numerator: int, denominator: int) -> float:

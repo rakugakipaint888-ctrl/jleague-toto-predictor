@@ -1,5 +1,6 @@
 """開催回・Version別の履歴保存とCSV必須列を確認する。"""
 
+import json
 import tempfile
 import unittest
 from datetime import datetime, timedelta
@@ -11,6 +12,9 @@ from bet_evaluation import compare_bet_strategies
 from history_manager import JAPAN_TIMEZONE, TotoMatch, TotoPayouts, TotoRound
 from prediction_history import (
     HISTORY_COLUMNS,
+    PREDICTION_HISTORY_KEY_COLUMNS,
+    PREDICTION_HISTORY_OPTIONAL_COLUMNS,
+    PREDICTION_HISTORY_REQUIRED_COLUMNS,
     PredictionHistoryManager,
     finalize_prediction_results,
     records_from_prediction_results,
@@ -62,6 +66,81 @@ def round_with_results(complete: bool = True) -> TotoRound:
 
 
 class PredictionHistoryTest(unittest.TestCase):
+    def test_history_schema_declares_keys_required_and_optional_columns(self) -> None:
+        self.assertTrue(
+            set(PREDICTION_HISTORY_KEY_COLUMNS).issubset(
+                PREDICTION_HISTORY_REQUIRED_COLUMNS
+            )
+        )
+        self.assertFalse(
+            set(PREDICTION_HISTORY_REQUIRED_COLUMNS)
+            & set(PREDICTION_HISTORY_OPTIONAL_COLUMNS)
+        )
+        self.assertEqual(
+            HISTORY_COLUMNS,
+            (
+                *PREDICTION_HISTORY_REQUIRED_COLUMNS,
+                *PREDICTION_HISTORY_OPTIONAL_COLUMNS,
+            ),
+        )
+
+    def test_corrupt_history_csv_returns_empty_formal_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "prediction_history.csv"
+            path.write_bytes(b"\xff\xfe\x00broken")
+            loaded = PredictionHistoryManager(path).load()
+
+        self.assertTrue(loaded.empty)
+        self.assertEqual(tuple(loaded.columns), HISTORY_COLUMNS)
+
+    def test_legacy_history_adds_version75_optional_columns_as_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "prediction_history.csv"
+            pd.DataFrame(
+                [
+                    {
+                        "toto_round": 1548,
+                        "toto_match_number": 1,
+                        "prediction_version": "Version7-A",
+                        "prediction": "1",
+                    }
+                ]
+            ).to_csv(path, index=False, encoding="utf-8-sig")
+            loaded = PredictionHistoryManager(path).load()
+
+        self.assertEqual(tuple(loaded.columns), HISTORY_COLUMNS)
+        self.assertEqual(loaded.at[0, "prediction_version"], "Version7-A")
+        self.assertEqual(loaded.at[0, "prediction_settings_json"], "")
+        self.assertEqual(loaded.at[0, "draw_candidate_reasons"], "")
+
+    def test_live_prediction_records_strategy_cutoff_eligibility(self) -> None:
+        cutoff = datetime(2025, 6, 21, 0, 0, tzinfo=JAPAN_TIMEZONE)
+        before = records_from_prediction_results(
+            result_frame(),
+            round_with_results(),
+            prediction_date=cutoff - timedelta(minutes=1),
+            strategy_backtest_cutoff_at=cutoff,
+        )
+        after = records_from_prediction_results(
+            result_frame(),
+            round_with_results(),
+            prediction_date=cutoff + timedelta(minutes=1),
+            strategy_backtest_cutoff_at=cutoff,
+        )
+
+        self.assertTrue(
+            all(record.strategy_backtest_eligible is True for record in before)
+        )
+        self.assertTrue(
+            all(record.strategy_backtest_eligible is False for record in after)
+        )
+        self.assertTrue(
+            all(
+                record.strategy_backtest_cutoff_at == cutoff.isoformat()
+                for record in before
+            )
+        )
+
     def test_actual_comparison_adds_hits_to_screen_csv(self) -> None:
         frame = result_frame().assign(
             toto_match_number=list(range(1, 14)),
@@ -135,8 +214,19 @@ class PredictionHistoryTest(unittest.TestCase):
             version7b_away_win=55.0,
             home_expected_after_version7b=0.9,
             away_expected_after_version7b=1.6,
+            draw_candidate=True,
+            draw_candidate_reasons=[("確率差が小さい",)] * 13,
         )
-        records = records_from_prediction_results(frame, round_with_results())
+        settings = {
+            "schema_version": 1,
+            "prediction_version": "Version7-B",
+            "model_options": {"use_elo": True},
+        }
+        records = records_from_prediction_results(
+            frame,
+            round_with_results(),
+            settings_by_version={"Version7-B": settings},
+        )
         self.assertEqual(len(records), 65)
         version7b = [
             record for record in records if record.prediction_version == "Version7-B"
@@ -144,6 +234,26 @@ class PredictionHistoryTest(unittest.TestCase):
         self.assertEqual(len(version7b), 13)
         self.assertTrue(all(record.prediction == "2" for record in version7b))
         self.assertTrue(all(record.probability_2 == 0.55 for record in version7b))
+        self.assertTrue(all(record.draw_candidate is True for record in version7b))
+        self.assertTrue(
+            all(
+                json.loads(record.draw_candidate_reasons) == ["確率差が小さい"]
+                for record in version7b
+            )
+        )
+        self.assertTrue(
+            all(
+                json.loads(record.prediction_settings_json) == settings
+                for record in version7b
+            )
+        )
+        version7a = [
+            record for record in records if record.prediction_version == "Version7-A"
+        ]
+        self.assertTrue(all(record.draw_candidate is None for record in version7a))
+        self.assertTrue(
+            all(record.prediction_settings_json == "" for record in version7a)
+        )
 
     def test_reconcile_adds_actual_results_to_saved_prediction(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

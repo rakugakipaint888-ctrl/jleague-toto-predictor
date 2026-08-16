@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import math
 import os
 import tempfile
 import unittest
@@ -18,6 +19,7 @@ from streamlit.testing.v1 import AppTest
 
 import bet_optimization_ui
 from analysis import Version7AHistoryGenerationResult
+from bet_config import DEFAULT_BUDGET_YEN
 from bet_export import BET_PLAN_DISPLAY_COLUMNS
 from data_loader import CsvMatchDataSource
 from history_manager import (
@@ -157,6 +159,26 @@ def display_probability_frame(*, include_draw_candidates: bool) -> pd.DataFrame:
 
 
 class Version7CScalarAccessTest(unittest.TestCase):
+    def test_stale_numeric_state_is_bounded_without_nan_or_infinity(self) -> None:
+        self.assertEqual(
+            bet_optimization_ui._bounded_int(None, default=0, maximum=13),
+            0,
+        )
+        self.assertEqual(
+            bet_optimization_ui._bounded_int(float("inf"), default=0, maximum=13),
+            0,
+        )
+        self.assertEqual(
+            bet_optimization_ui._bounded_int(99, default=0, maximum=13),
+            13,
+        )
+        self.assertEqual(
+            bet_optimization_ui._bounded_float(
+                float("nan"), default=0.25, minimum=0.0, maximum=1.0
+            ),
+            0.25,
+        )
+
     def test_first_scalar_reads_zero_index_series(self) -> None:
         values = pd.Series(["Version7-A"], index=[0])
 
@@ -339,6 +361,14 @@ class Version7CStreamlitTest(unittest.TestCase):
             and tuple(element.value.columns) == BET_PLAN_DISPLAY_COLUMNS
         ]
 
+    def test_sidebar_shows_version75_app_release(self) -> None:
+        app = AppTest.from_file(str(PROJECT_ROOT / "app.py")).run(timeout=25)
+
+        self.assertTrue(
+            any(caption.value == "App Version: Version7.5" for caption in app.caption)
+        )
+        self.assertEqual(len(app.exception), 0)
+
     def test_renderer_signature_matches_every_app_call(self) -> None:
         signature = inspect.signature(
             bet_optimization_ui.render_bet_optimization_tab
@@ -407,6 +437,7 @@ class Version7CStreamlitTest(unittest.TestCase):
 
         self.assertEqual(len(app.exception), 0)
         self.assertEqual(len(app.error), 0)
+
         ai_plan = app.session_state["version7c_ai_plan"]
         manual_plan = app.session_state["version7c_manual_plan"]
         self.assertEqual((ai_plan.double_count, ai_plan.triple_count), (3, 0))
@@ -470,6 +501,43 @@ class Version7CStreamlitTest(unittest.TestCase):
         self.assertTrue(all(len(frame) == 13 for frame in changed_frames))
         self.assertEqual(len(app.exception), 0)
         self.assertEqual(len(app.error), 0)
+
+    def test_stale_session_state_is_normalized_before_widgets_render(self) -> None:
+        app = AppTest.from_file(str(PROJECT_ROOT / "app.py"))
+        app.session_state["latest_prediction_results"] = display_probability_frame(
+            include_draw_candidates=True
+        )
+        app.session_state["version7c_target"] = pd.Series(["legacy"])
+        app.session_state["latest_prediction_draw_threshold"] = float("inf")
+        app.session_state["version7c_double_choice_toto"] = "任意指定"
+        app.session_state["version7c_double_custom_toto"] = None
+        app.session_state["version7c_budget_choice_toto"] = "任意指定"
+        app.session_state["version7c_budget_custom_toto"] = float("nan")
+        app.session_state[
+            "version7c_draw_threshold_choice_toto"
+        ] = "任意指定"
+        app.session_state[
+            "version7c_draw_threshold_custom_toto"
+        ] = float("inf")
+
+        app = app.run(timeout=25)
+
+        self.assertEqual(len(app.exception), 0)
+        self.assertEqual(len(app.error), 0)
+        self.assertIn(
+            app.session_state["version7c_target"],
+            bet_optimization_ui.TARGET_LABEL_TO_KEY,
+        )
+        self.assertEqual(app.session_state["version7c_double_custom_toto"], 0)
+        self.assertEqual(
+            app.session_state["version7c_budget_custom_toto"],
+            DEFAULT_BUDGET_YEN,
+        )
+        self.assertTrue(
+            math.isfinite(
+                app.session_state["version7c_draw_threshold_custom_toto"]
+            )
+        )
 
     def test_mini_a_uses_formal_display_schema(self) -> None:
         app = self._predicted_app()

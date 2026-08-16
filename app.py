@@ -18,6 +18,8 @@ ensure_version7b_model_pipeline()
 
 import bet_optimization_ui
 from analysis import render_analysis_tab
+from app_version import APP_VERSION
+from backtest import BacktestError, backtest_cutoff
 from bet_optimization_ui import render_bet_optimization_tab
 from draw_analysis import render_draw_analysis_tab
 from draw_optimizer import load_active_draw_settings
@@ -53,6 +55,7 @@ from model_pipeline import (
 )
 from parameter_manager import (
     load_active_version7b_settings,
+    prediction_settings_snapshot,
     to_runtime_settings,
 )
 from prediction import (
@@ -88,6 +91,7 @@ st.set_page_config(
 
 APP_COMMIT_SHA = get_app_commit()
 log_runtime_diagnostics(bet_optimization_ui, APP_COMMIT_SHA)
+st.sidebar.caption(f"App Version: {APP_VERSION}")
 st.sidebar.caption(f"App Commit: {short_app_commit(APP_COMMIT_SHA)}")
 
 
@@ -1650,6 +1654,27 @@ with prediction_tab:
             st.session_state["latest_prediction_draw_threshold"] = (
                 draw_candidate_threshold_percent / 100.0
             )
+            prediction_time = datetime.fromisoformat(prediction_date)
+            try:
+                strategy_backtest_cutoff_at = (
+                    backtest_cutoff(current_toto_round)
+                    if current_toto_round is not None
+                    else None
+                )
+            except BacktestError:
+                strategy_backtest_cutoff_at = None
+            history_settings = prediction_settings_snapshot(
+                active_version7b_settings,
+                draw_settings=prediction_draw_settings,
+                model_options={
+                    "use_elo": model_options.use_elo,
+                    "use_venue": model_options.use_venue,
+                    "use_recent_weighting": model_options.use_recent_weighting,
+                    "use_standings": model_options.use_standings,
+                },
+                prediction_time=prediction_time,
+                strategy_backtest_cutoff_at=strategy_backtest_cutoff_at,
+            )
 
             if (
                 current_toto_round is not None
@@ -1657,7 +1682,11 @@ with prediction_tab:
                 and prediction_history_manager.save_prediction_results(
                     result_df,
                     current_toto_round,
-                    datetime.fromisoformat(prediction_date),
+                    prediction_time,
+                    settings_by_version={
+                        active_version7b_settings.version_label: history_settings
+                    },
+                    strategy_backtest_cutoff_at=strategy_backtest_cutoff_at,
                 )
             ):
                 st.caption(

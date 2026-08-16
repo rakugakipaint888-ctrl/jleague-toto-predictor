@@ -440,6 +440,40 @@ class AnalysisTest(unittest.TestCase):
             )
         )
 
+    def test_prediction_saved_after_cutoff_is_not_evaluable(self) -> None:
+        toto_round = completed_round()
+        records = [
+            {
+                "toto_round": toto_round.round_id,
+                "toto_match_number": match_number,
+                "prediction_version": "Version7-B",
+                "prediction": "1",
+                "probability_1": 0.6,
+                "probability_0": 0.2,
+                "probability_2": 0.2,
+                "actual_result": "1",
+                "strategy_backtest_eligible": False,
+            }
+            for match_number in range(1, 14)
+        ]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            manager = PredictionHistoryManager(
+                Path(temporary_directory) / "prediction_history.csv"
+            )
+            self.assertTrue(manager.save_records(records))
+            result = reconcile_saved_version7b_strategy_history(
+                prediction_history_manager=manager,
+                history_manager=MappedRoundHistoryManager(
+                    {toto_round.round_id: toto_round}
+                ),
+            )
+
+        self.assertEqual(result.evaluable_round_ids, ())
+        self.assertEqual(result.excluded_round_ids, (toto_round.round_id,))
+        self.assertTrue(
+            any("cutoff以後" in message for message in result.messages)
+        )
+
     def test_version7b_reconciles_only_saved_predictions(self) -> None:
         toto_round = completed_round()
         source_matches = historical_matches()

@@ -17,6 +17,8 @@ from bet_optimizer import (
     target_source_match_numbers,
 )
 from history_manager import normalize_toto_payouts
+from metrics import normalize_toto_outcome
+from prediction_history import normalize_optional_bool
 
 
 BET_BACKTEST_REQUIRED_COLUMNS = frozenset(
@@ -39,6 +41,11 @@ BET_BACKTEST_OPTIONAL_COLUMNS = frozenset(
         "stake_yen",
         "payout_yen",
         "roi",
+        "draw_candidate",
+        "draw_candidate_reasons",
+        "prediction_settings_json",
+        "strategy_backtest_eligible",
+        "strategy_backtest_cutoff_at",
     }
 )
 
@@ -100,6 +107,11 @@ def backtest_bet_strategy(
     selected = history.loc[
         history["prediction_version"].astype(str) == str(prediction_version)
     ].copy()
+    if "strategy_backtest_eligible" in selected.columns:
+        explicit_eligibility = selected["strategy_backtest_eligible"].map(
+            normalize_optional_bool
+        )
+        selected = selected.loc[explicit_eligibility.ne(False)]
     if selected.empty:
         return _empty_backtest(
             strategy,
@@ -134,7 +146,7 @@ def backtest_bet_strategy(
             continue
         target_rows = group.loc[group["_match"].astype(int).isin(required_numbers)]
         actuals = {
-            int(row["_match"]): _actual_label(row.get("actual_result"))
+            int(row["_match"]): normalize_toto_outcome(row.get("actual_result"))
             for _, row in target_rows.iterrows()
         }
         if any(actuals.get(number) not in ("1", "0", "2") for number in required_numbers):
@@ -308,19 +320,6 @@ def _empty_backtest(
         roi=None,
         evaluated_round_ids=(),
     )
-
-
-def _actual_label(value: object) -> str:
-    if value is None or isinstance(value, bool):
-        return ""
-    text = str(value).strip()
-    if text in ("1", "0", "2"):
-        return text
-    number = pd.to_numeric(value, errors="coerce")
-    if not pd.isna(number) and float(number).is_integer():
-        normalized = str(int(number))
-        return normalized if normalized in ("1", "0", "2") else ""
-    return ""
 
 
 def _ticket_hit_distribution(

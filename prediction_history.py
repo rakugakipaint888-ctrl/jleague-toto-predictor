@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from io import StringIO
@@ -16,6 +17,7 @@ from metrics import (
     DEFAULT_TOTO_STAKE_YEN,
     TOTO_OUTCOMES,
     evaluate_model,
+    normalize_toto_outcome,
     toto_payout_for_hits,
 )
 
@@ -26,10 +28,13 @@ DEFAULT_PREDICTION_HISTORY_PATH = (
     PROJECT_ROOT / "data" / "history" / "prediction_history.csv"
 )
 
-HISTORY_COLUMNS = (
+PREDICTION_HISTORY_KEY_COLUMNS = (
     "toto_round",
     "toto_match_number",
     "prediction_version",
+)
+PREDICTION_HISTORY_REQUIRED_COLUMNS = (
+    *PREDICTION_HISTORY_KEY_COLUMNS,
     "prediction_date",
     "home_team",
     "away_team",
@@ -39,6 +44,8 @@ HISTORY_COLUMNS = (
     "probability_2",
     "home_expected_goals",
     "away_expected_goals",
+)
+PREDICTION_HISTORY_OPTIONAL_COLUMNS = (
     "actual_result",
     "hit",
     "total_hits",
@@ -50,6 +57,15 @@ HISTORY_COLUMNS = (
     "stake_yen",
     "payout_yen",
     "roi",
+    "draw_candidate",
+    "draw_candidate_reasons",
+    "prediction_settings_json",
+    "strategy_backtest_eligible",
+    "strategy_backtest_cutoff_at",
+)
+HISTORY_COLUMNS = (
+    *PREDICTION_HISTORY_REQUIRED_COLUMNS,
+    *PREDICTION_HISTORY_OPTIONAL_COLUMNS,
 )
 
 
@@ -80,6 +96,11 @@ class PredictionHistoryRecord:
     stake_yen: Optional[int] = None
     payout_yen: Optional[int] = None
     roi: Optional[float] = None
+    draw_candidate: Optional[bool] = None
+    draw_candidate_reasons: str = ""
+    prediction_settings_json: str = ""
+    strategy_backtest_eligible: Optional[bool] = None
+    strategy_backtest_cutoff_at: str = ""
 
 
 def _as_probability(value: Any) -> float:
@@ -100,16 +121,45 @@ def _as_float(value: Any, default: float = 0.0) -> float:
 def _as_toto_label(value: Any) -> str:
     """CSVで1/0/2が数値化されても正規ラベルへ戻す。"""
 
-    if value is None or isinstance(value, bool):
+    return normalize_toto_outcome(value)
+
+
+def _metadata_json(value: Any) -> str:
+    """履歴の補助メタデータを安定したJSON文字列へ変換する。"""
+
+    if value is None:
         return ""
-    text_value = str(value).strip()
-    if text_value in TOTO_OUTCOMES:
-        return text_value
-    number = pd.to_numeric(value, errors="coerce")
-    if not pd.isna(number) and float(number).is_integer():
-        normalized = str(int(number))
-        return normalized if normalized in TOTO_OUTCOMES else ""
-    return ""
+    try:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError):
+        return ""
+
+
+def normalize_optional_bool(value: Any) -> Optional[bool]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in ("true", "1"):
+            return True
+        if normalized in ("false", "0"):
+            return False
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not pd.notna(number) or number not in (0.0, 1.0):
+        return None
+    return bool(number)
 
 
 def _actual_results_by_number(toto_round: TotoRound) -> dict[int, str]:
@@ -256,6 +306,9 @@ def records_from_prediction_results(
     result_df: pd.DataFrame,
     toto_round: TotoRound,
     prediction_date: Optional[datetime] = None,
+    *,
+    settings_by_version: Optional[Mapping[str, Mapping[str, Any]]] = None,
+    strategy_backtest_cutoff_at: Optional[datetime] = None,
 ) -> list[PredictionHistoryRecord]:
     """画面の13行結果をVersion4～Version7-Bの履歴行へ変換する。"""
 
@@ -268,7 +321,23 @@ def records_from_prediction_results(
     prediction_time_text = prediction_time.astimezone(
         JAPAN_TIMEZONE
     ).isoformat()
+    if strategy_backtest_cutoff_at is not None:
+        if strategy_backtest_cutoff_at.tzinfo is None:
+            strategy_backtest_cutoff_at = strategy_backtest_cutoff_at.replace(
+                tzinfo=JAPAN_TIMEZONE
+            )
+        normalized_strategy_cutoff = strategy_backtest_cutoff_at.astimezone(
+            JAPAN_TIMEZONE
+        )
+        strategy_backtest_eligible = (
+            prediction_time.astimezone(JAPAN_TIMEZONE) < normalized_strategy_cutoff
+        )
+        strategy_backtest_cutoff_text = normalized_strategy_cutoff.isoformat()
+    else:
+        strategy_backtest_eligible = None
+        strategy_backtest_cutoff_text = ""
     actuals = _actual_results_by_number(toto_round)
+    settings_by_version = settings_by_version or {}
     records = []
 
     version_fields = {
@@ -318,6 +387,13 @@ def records_from_prediction_results(
             "home_expected": "home_expected_after_version7b",
             "away_expected": "away_expected_after_version7b",
         }
+
+    current_versions = (
+        result_df["prediction_version"].dropna().astype(str).unique().tolist()
+        if "prediction_version" in result_df.columns
+        else ["Version7-A"]
+    )
+    current_version = current_versions[0] if len(current_versions) == 1 else ""
 
     order_column = (
         "toto_match_number"
@@ -378,6 +454,21 @@ def records_from_prediction_results(
                         if actual_result in TOTO_OUTCOMES
                         else None
                     ),
+                    draw_candidate=(
+                        normalize_optional_bool(row.get("draw_candidate"))
+                        if version == current_version
+                        else None
+                    ),
+                    draw_candidate_reasons=(
+                        _metadata_json(row.get("draw_candidate_reasons"))
+                        if version == current_version
+                        else ""
+                    ),
+                    prediction_settings_json=_metadata_json(
+                        settings_by_version.get(version)
+                    ),
+                    strategy_backtest_eligible=strategy_backtest_eligible,
+                    strategy_backtest_cutoff_at=strategy_backtest_cutoff_text,
                 )
             )
 
@@ -421,6 +512,9 @@ class PredictionHistoryManager:
             "prediction_date",
             "home_team",
             "away_team",
+            "draw_candidate_reasons",
+            "prediction_settings_json",
+            "strategy_backtest_cutoff_at",
         ):
             frame[text_column] = (
                 frame[text_column].fillna("").astype(str)
@@ -498,11 +592,16 @@ class PredictionHistoryManager:
         result_df: pd.DataFrame,
         toto_round: TotoRound,
         prediction_date: Optional[datetime] = None,
+        *,
+        settings_by_version: Optional[Mapping[str, Mapping[str, Any]]] = None,
+        strategy_backtest_cutoff_at: Optional[datetime] = None,
     ) -> bool:
         records = records_from_prediction_results(
             result_df,
             toto_round,
             prediction_date,
+            settings_by_version=settings_by_version,
+            strategy_backtest_cutoff_at=strategy_backtest_cutoff_at,
         )
         return self.save_records(
             records,

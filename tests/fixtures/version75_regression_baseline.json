@@ -1,0 +1,885 @@
+{
+  "baseline_commit": "a5c5897ba970bcc5b6a4207e3536f8203e7e9fe8",
+  "plans": {
+    "mini_a": {
+      "estimated_full_coverage": 0.13899199999999998,
+      "purchase_amount_yen": 800,
+      "rows": [
+        {
+          "bet_type": "single",
+          "coverage": 0.7,
+          "double_candidate_score": 33.165328391579806,
+          "draw_candidate": false,
+          "draw_inclusion_recommended": false,
+          "draw_inclusion_score": null,
+          "match_number": 1,
+          "outcomes": [
+            "1"
+          ],
+          "probability_0": 0.18,
+          "probability_1": 0.7,
+          "probability_2": 0.12,
+          "single_confidence": "高",
+          "source_match_number": 1,
+          "top_outcome": "1",
+          "triple_candidate_score": 39.91439406989577,
+          "uncertainty_score": 40.51345974821173
+        },
+        {
+          "bet_type": "double",
+          "coverage": 0.73,
+          "double_candidate_score": 92.84306328125551,
+          "draw_candidate": true,
+          "draw_inclusion_recommended": false,
+          "draw_inclusion_score": null,
+          "match_number": 2,
+          "outcomes": [
+            "1",
+            "0"
+          ],
+          "probability_0": 0.35,
+          "probability_1": 0.38,
+          "probability_2": 0.27,
+          "single_confidence": "低",
+          "source_match_number": 2,
+          "top_outcome": "1",
+          "triple_candidate_score": 92.69767593750662,
+          "uncertainty_score": 94.65228859375772
+        },
+        {
+          "bet_type": "double",
+          "coverage": 0.6799999999999999,
+          "double_candidate_score": 94.2891411663525,
+          "draw_candidate": true,
+          "draw_inclusion_recommended": false,
+          "draw_inclusion_score": null,
+          "match_number": 3,
+          "outcomes": [
+            "1",
+            "0"
+          ],
+          "probability_0": 0.33,
+          "probability_1": 0.35,
+          "probability_2": 0.32,
+          "single_confidence": "低",
+          "source_match_number": 3,
+          "top_outcome": "1",
+          "triple_candidate_score": 97.46096939962298,
+          "uncertainty_score": 97.70779763289347
+        },
+        {
+          "bet_type": "single",
+          "coverage": 0.5,
+          "double_candidate_score": 75.11681777683138,
+          "draw_candidate": false,
+          "draw_inclusion_recommended": false,
+          "draw_inclusion_score": null,
+          "match_number": 4,
+          "outcomes": [
+            "1"
+          ],
+          "probability_0": 0.1,
+          "probability_1": 0.5,
+          "probability_2": 0.4,
+          "single_confidence": "低",
+          "source_match_number": 4,
+          "top_outcome": "1",
+          "triple_candidate_score": 64.66018133219764,
+          "uncertainty_score": 71.45354488756392
+        },
+        {
+          "bet_type": "double",
+          "coverage": 0.8,
+          "double_candidate_score": 83.63814535564403,
+          "draw_candidate": true,
+          "draw_inclusion_recommended": false,
+          "draw_inclusion_score": null,
+          "match_number": 5,
+          "outcomes": [
+            "1",
+            "0"
+          ],
+          "probability_0": 0.35,
+          "probability_1": 0.45,
+          "probability_2": 0.2,
+          "single_confidence": "低",
+          "source_match_number": 5,
+          "top_outcome": "1",
+          "triple_candidate_score": 81.03577442677285,
+          "uncertainty_score": 84.55840349790165
+        }
+      ],
+      "ticket_count": 8
+    },
+    "mini_b": {
+      "estimated_full_coverage": 0.13899199999999998,
+      "purchase_amount_yen": 800,
+      "rows": [
+        {
+          "bet_type": "single",
+          "coverage": 0.7,
+          "double_candidate_score": 33.165328391579806,
+          "draw_candidate": false,
+          "draw_inclusion_recommended": false,
+          "draw_inclusion_score": null,
+          "match_number": 1,
+          "outcomes": [
+            "1"
+          ],
+          "probability_0": 0.18,
+          "probability_1": 0.7,
+          "probability_2": 0.12,
+          "single_confidence": "高",
+          "source_match_number": 6,
+          "top_outcome": "1",
+          "triple_candidate_score": 39.91439406989577,
+          "uncertainty_score": 40.51345974821173
+        },
+        {
+          "bet_type": "double",
+          "coverage": 0.73,
+          "double_candidate_score": 92.84306328125551,
+          "draw_candidate": true,
+          "draw_inclusion_recommended": false,
+          "draw_inclusion_score": null,
+          "match_number": 2,
+          "outcomes": [
+            "1",
+            "0"
+          ],
+          "probability_0": 0.35,
+          "probability_1": 0.38,
+          "probability_2": 0.27,
+          "single_confidence": "低",
+          "source_match_number": 7,
+          "top_outcome": "1",
+          "triple_candidate_score": 92.69767593750662,
+          "uncertainty_score": 94.65228859375772
+        },
+        {
+          "bet_type": "double",
+          "coverage": 0.6799999999999999,
+          "double_candidate_score": 94.2891411663525,
+          "draw_candidate": true,
+          "draw_inclusion_recommended": false,
+          "draw_inclusion_score": null,
+          "match_number": 3,
+          "outcomes": [
+            "1",
+            "0"
+          ],
+          "probability_0": 0.33,
+          "probability_1": 0.35,
+          "probability_2": 0.32,
+          "single_confidence": "低",
+          "source_match_number": 8,
+          "top_outcome": "1",
+          "triple_candidate_score": 97.46096939962298,
+          "uncertainty_score": 97.70779763289347
+        },
+        {
+          "bet_type": "single",
+          "coverage": 0.5,
+          "double_candidate_score": 75.11681777683138,
+          "draw_candidate": false,
+          "draw_inclusion_recommended": false,
+          "draw_inclusion_score": null,
+          "match_number": 4,
+          "outcomes": [
+            "1"
+          ],
+          "probability_0": 0.1,
+          "probability_1": 0.5,
+          "probability_2": 0.4,
+          "single_confidence": "低",
+          "source_match_number": 9,
+          "top_outcome": "1",
+          "triple_candidate_score": 64.66018133219764,
+          "uncertainty_score": 71.45354488756392
+        },
+        {
+          "bet_type": "double",
+          "coverage": 0.8,
+          "double_candidate_score": 83.63814535564403,
+          "draw_candidate": true,
+          "draw_inclusion_recommended": false,
+          "draw_inclusion_score": null,
+          "match_number": 5,
+          "outcomes": [
+            "1",
+            "0"
+          ],
+          "probability_0": 0.35,
+          "probability_1": 0.45,
+          "probability_2": 0.2,
+          "single_confidence": "低",
+          "source_match_number": 10,
+          "top_outcome": "1",
+          "triple_candidate_score": 81.03577442677285,
+          "uncertainty_score": 84.55840349790165
+        }
+      ],
+      "ticket_count": 8
+    },
+    "toto": {
+      "estimated_full_coverage": 0.00029959646465951985,
+      "purchase_amount_yen": 800,
+      "rows": [
+        {
+          "bet_type": "single",
+          "coverage": 0.7,
+          "double_candidate_score": 33.165328391579806,
+          "draw_candidate": false,
+          "draw_inclusion_recommended": false,
+          "draw_inclusion_score": null,
+          "match_number": 1,
+          "outcomes": [
+            "1"
+          ],
+          "probability_0": 0.18,
+          "probability_1": 0.7,
+          "probability_2": 0.12,
+          "single_confidence": "高",
+          "source_match_number": 1,
+          "top_outcome": "1",
+          "triple_candidate_score": 39.91439406989577,
+          "uncertainty_score": 40.51345974821173
+        },
+        {
+          "bet_type": "single",
+          "coverage": 0.38,
+          "double_candidate_score": 92.84306328125551,
+          "draw_candidate": true,
+          "draw_inclusion_recommended": false,
+          "draw_inclusion_score": null,
+          "match_number": 2,
+          "outcomes": [
+            "1"
+          ],
+          "probability_0": 0.35,
+          "probability_1": 0.38,
+          "probability_2": 0.27,
+          "single_confidence": "低",
+          "source_match_number": 2,
+          "top_outcome": "1",
+          "triple_candidate_score": 92.69767593750662,
+          "uncertainty_score": 94.65228859375772
+        },
+        {
+          "bet_type": "double",
+          "coverage": 0.6799999999999999,
+          "double_candidate_score": 94.2891411663525,
+          "draw_candidate": true,
+          "draw_inclusion_recommended": false,
+          "draw_inclusion_score": null,
+          "match_number": 3,
+          "outcomes": [
+            "1",
+            "0"
+          ],
+          "probability_0": 0.33,
+          "probability_1": 0.35,
+          "probability_2": 0.32,
+          "single_confidence": "低",
+          "source_match_number": 3,
+          "top_outcome": "1",
+          "triple_candidate_score": 97.46096939962298,
+          "uncertainty_score": 97.70779763289347
+        },
+        {
+          "bet_type": "single",
+          "coverage": 0.5,
+          "double_candidate_score": 75.11681777683138,
+          "draw_candidate": false,
+          "draw_inclusion_recommended": false,
+          "draw_inclusion_score": null,
+          "match_number": 4,
+          "outcomes": [
+            "1"
+          ],
+          "probability_0": 0.1,
+          "probability_1": 0.5,
+          "probability_2": 0.4,
+          "single_confidence": "低",
+          "source_match_number": 4,
+          "top_outcome": "1",
+          "triple_candidate_score": 64.66018133219764,
+          "uncertainty_score": 71.45354488756392
+        },
+        {
+          "bet_type": "single",
+          "coverage": 0.45,
+          "double_candidate_score": 83.63814535564403,
+          "draw_candidate": true,
+          "draw_inclusion_recommended": false,
+          "draw_inclusion_score": null,
+          "match_number": 5,
+          "outcomes": [
+            "1"
+          ],
+          "probability_0": 0.35,
+          "probability_1": 0.45,
+          "probability_2": 0.2,
+          "single_confidence": "低",
+          "source_match_number": 5,
+          "top_outcome": "1",
+          "triple_candidate_score": 81.03577442677285,
+          "uncertainty_score": 84.55840349790165
+        },
+        {
+          "bet_type": "single",
+          "coverage": 0.7,
+          "double_candidate_score": 33.165328391579806,
+          "draw_candidate": false,
+          "draw_inclusion_recommended": false,
+          "draw_inclusion_score": null,
+          "match_number": 6,
+          "outcomes": [
+            "1"
+          ],
+          "probability_0": 0.18,
+          "probability_1": 0.7,
+          "probability_2": 0.12,
+          "single_confidence": "高",
+          "source_match_number": 6,
+          "top_outcome": "1",
+          "triple_candidate_score": 39.91439406989577,
+          "uncertainty_score": 40.51345974821173
+        },
+        {
+          "bet_type": "single",
+          "coverage": 0.38,
+          "double_candidate_score": 92.84306328125551,
+          "draw_candidate": true,
+          "draw_inclusion_recommended": false,
+          "draw_inclusion_score": null,
+          "match_number": 7,
+          "outcomes": [
+            "1"
+          ],
+          "probability_0": 0.35,
+          "probability_1": 0.38,
+          "probability_2": 0.27,
+          "single_confidence": "低",
+          "source_match_number": 7,
+          "top_outcome": "1",
+          "triple_candidate_score": 92.69767593750662,
+          "uncertainty_score": 94.65228859375772
+        },
+        {
+          "bet_type": "double",
+          "coverage": 0.6799999999999999,
+          "double_candidate_score": 94.2891411663525,
+          "draw_candidate": true,
+          "draw_inclusion_recommended": false,
+          "draw_inclusion_score": null,
+          "match_number": 8,
+          "outcomes": [
+            "1",
+            "0"
+          ],
+          "probability_0": 0.33,
+          "probability_1": 0.35,
+          "probability_2": 0.32,
+          "single_confidence": "低",
+          "source_match_number": 8,
+          "top_outcome": "1",
+          "triple_candidate_score": 97.46096939962298,
+          "uncertainty_score": 97.70779763289347
+        },
+        {
+          "bet_type": "single",
+          "coverage": 0.5,
+          "double_candidate_score": 75.11681777683138,
+          "draw_candidate": false,
+          "draw_inclusion_recommended": false,
+          "draw_inclusion_score": null,
+          "match_number": 9,
+          "outcomes": [
+            "1"
+          ],
+          "probability_0": 0.1,
+          "probability_1": 0.5,
+          "probability_2": 0.4,
+          "single_confidence": "低",
+          "source_match_number": 9,
+          "top_outcome": "1",
+          "triple_candidate_score": 64.66018133219764,
+          "uncertainty_score": 71.45354488756392
+        },
+        {
+          "bet_type": "single",
+          "coverage": 0.45,
+          "double_candidate_score": 83.63814535564403,
+          "draw_candidate": true,
+          "draw_inclusion_recommended": false,
+          "draw_inclusion_score": null,
+          "match_number": 10,
+          "outcomes": [
+            "1"
+          ],
+          "probability_0": 0.35,
+          "probability_1": 0.45,
+          "probability_2": 0.2,
+          "single_confidence": "低",
+          "source_match_number": 10,
+          "top_outcome": "1",
+          "triple_candidate_score": 81.03577442677285,
+          "uncertainty_score": 84.55840349790165
+        },
+        {
+          "bet_type": "single",
+          "coverage": 0.7,
+          "double_candidate_score": 33.165328391579806,
+          "draw_candidate": false,
+          "draw_inclusion_recommended": false,
+          "draw_inclusion_score": null,
+          "match_number": 11,
+          "outcomes": [
+            "1"
+          ],
+          "probability_0": 0.18,
+          "probability_1": 0.7,
+          "probability_2": 0.12,
+          "single_confidence": "高",
+          "source_match_number": 11,
+          "top_outcome": "1",
+          "triple_candidate_score": 39.91439406989577,
+          "uncertainty_score": 40.51345974821173
+        },
+        {
+          "bet_type": "single",
+          "coverage": 0.38,
+          "double_candidate_score": 92.84306328125551,
+          "draw_candidate": true,
+          "draw_inclusion_recommended": false,
+          "draw_inclusion_score": null,
+          "match_number": 12,
+          "outcomes": [
+            "1"
+          ],
+          "probability_0": 0.35,
+          "probability_1": 0.38,
+          "probability_2": 0.27,
+          "single_confidence": "低",
+          "source_match_number": 12,
+          "top_outcome": "1",
+          "triple_candidate_score": 92.69767593750662,
+          "uncertainty_score": 94.65228859375772
+        },
+        {
+          "bet_type": "double",
+          "coverage": 0.6799999999999999,
+          "double_candidate_score": 94.2891411663525,
+          "draw_candidate": true,
+          "draw_inclusion_recommended": false,
+          "draw_inclusion_score": null,
+          "match_number": 13,
+          "outcomes": [
+            "1",
+            "0"
+          ],
+          "probability_0": 0.33,
+          "probability_1": 0.35,
+          "probability_2": 0.32,
+          "single_confidence": "低",
+          "source_match_number": 13,
+          "top_outcome": "1",
+          "triple_candidate_score": 97.46096939962298,
+          "uncertainty_score": 97.70779763289347
+        }
+      ],
+      "ticket_count": 8
+    },
+    "toto_with_triple": {
+      "estimated_full_coverage": 0.0004405830362639998,
+      "purchase_amount_yen": 1200,
+      "rows": [
+        {
+          "bet_type": "single",
+          "coverage": 0.7,
+          "double_candidate_score": 33.165328391579806,
+          "draw_candidate": false,
+          "draw_inclusion_recommended": false,
+          "draw_inclusion_score": null,
+          "match_number": 1,
+          "outcomes": [
+            "1"
+          ],
+          "probability_0": 0.18,
+          "probability_1": 0.7,
+          "probability_2": 0.12,
+          "single_confidence": "高",
+          "source_match_number": 1,
+          "top_outcome": "1",
+          "triple_candidate_score": 39.91439406989577,
+          "uncertainty_score": 40.51345974821173
+        },
+        {
+          "bet_type": "single",
+          "coverage": 0.38,
+          "double_candidate_score": 92.84306328125551,
+          "draw_candidate": true,
+          "draw_inclusion_recommended": false,
+          "draw_inclusion_score": null,
+          "match_number": 2,
+          "outcomes": [
+            "1"
+          ],
+          "probability_0": 0.35,
+          "probability_1": 0.38,
+          "probability_2": 0.27,
+          "single_confidence": "低",
+          "source_match_number": 2,
+          "top_outcome": "1",
+          "triple_candidate_score": 92.69767593750662,
+          "uncertainty_score": 94.65228859375772
+        },
+        {
+          "bet_type": "triple",
+          "coverage": 1,
+          "double_candidate_score": 94.2891411663525,
+          "draw_candidate": true,
+          "draw_inclusion_recommended": false,
+          "draw_inclusion_score": null,
+          "match_number": 3,
+          "outcomes": [
+            "1",
+            "0",
+            "2"
+          ],
+          "probability_0": 0.33,
+          "probability_1": 0.35,
+          "probability_2": 0.32,
+          "single_confidence": "低",
+          "source_match_number": 3,
+          "top_outcome": "1",
+          "triple_candidate_score": 97.46096939962298,
+          "uncertainty_score": 97.70779763289347
+        },
+        {
+          "bet_type": "single",
+          "coverage": 0.5,
+          "double_candidate_score": 75.11681777683138,
+          "draw_candidate": false,
+          "draw_inclusion_recommended": false,
+          "draw_inclusion_score": null,
+          "match_number": 4,
+          "outcomes": [
+            "1"
+          ],
+          "probability_0": 0.1,
+          "probability_1": 0.5,
+          "probability_2": 0.4,
+          "single_confidence": "低",
+          "source_match_number": 4,
+          "top_outcome": "1",
+          "triple_candidate_score": 64.66018133219764,
+          "uncertainty_score": 71.45354488756392
+        },
+        {
+          "bet_type": "single",
+          "coverage": 0.45,
+          "double_candidate_score": 83.63814535564403,
+          "draw_candidate": true,
+          "draw_inclusion_recommended": false,
+          "draw_inclusion_score": null,
+          "match_number": 5,
+          "outcomes": [
+            "1"
+          ],
+          "probability_0": 0.35,
+          "probability_1": 0.45,
+          "probability_2": 0.2,
+          "single_confidence": "低",
+          "source_match_number": 5,
+          "top_outcome": "1",
+          "triple_candidate_score": 81.03577442677285,
+          "uncertainty_score": 84.55840349790165
+        },
+        {
+          "bet_type": "single",
+          "coverage": 0.7,
+          "double_candidate_score": 33.165328391579806,
+          "draw_candidate": false,
+          "draw_inclusion_recommended": false,
+          "draw_inclusion_score": null,
+          "match_number": 6,
+          "outcomes": [
+            "1"
+          ],
+          "probability_0": 0.18,
+          "probability_1": 0.7,
+          "probability_2": 0.12,
+          "single_confidence": "高",
+          "source_match_number": 6,
+          "top_outcome": "1",
+          "triple_candidate_score": 39.91439406989577,
+          "uncertainty_score": 40.51345974821173
+        },
+        {
+          "bet_type": "single",
+          "coverage": 0.38,
+          "double_candidate_score": 92.84306328125551,
+          "draw_candidate": true,
+          "draw_inclusion_recommended": false,
+          "draw_inclusion_score": null,
+          "match_number": 7,
+          "outcomes": [
+            "1"
+          ],
+          "probability_0": 0.35,
+          "probability_1": 0.38,
+          "probability_2": 0.27,
+          "single_confidence": "低",
+          "source_match_number": 7,
+          "top_outcome": "1",
+          "triple_candidate_score": 92.69767593750662,
+          "uncertainty_score": 94.65228859375772
+        },
+        {
+          "bet_type": "double",
+          "coverage": 0.6799999999999999,
+          "double_candidate_score": 94.2891411663525,
+          "draw_candidate": true,
+          "draw_inclusion_recommended": false,
+          "draw_inclusion_score": null,
+          "match_number": 8,
+          "outcomes": [
+            "1",
+            "0"
+          ],
+          "probability_0": 0.33,
+          "probability_1": 0.35,
+          "probability_2": 0.32,
+          "single_confidence": "低",
+          "source_match_number": 8,
+          "top_outcome": "1",
+          "triple_candidate_score": 97.46096939962298,
+          "uncertainty_score": 97.70779763289347
+        },
+        {
+          "bet_type": "single",
+          "coverage": 0.5,
+          "double_candidate_score": 75.11681777683138,
+          "draw_candidate": false,
+          "draw_inclusion_recommended": false,
+          "draw_inclusion_score": null,
+          "match_number": 9,
+          "outcomes": [
+            "1"
+          ],
+          "probability_0": 0.1,
+          "probability_1": 0.5,
+          "probability_2": 0.4,
+          "single_confidence": "低",
+          "source_match_number": 9,
+          "top_outcome": "1",
+          "triple_candidate_score": 64.66018133219764,
+          "uncertainty_score": 71.45354488756392
+        },
+        {
+          "bet_type": "single",
+          "coverage": 0.45,
+          "double_candidate_score": 83.63814535564403,
+          "draw_candidate": true,
+          "draw_inclusion_recommended": false,
+          "draw_inclusion_score": null,
+          "match_number": 10,
+          "outcomes": [
+            "1"
+          ],
+          "probability_0": 0.35,
+          "probability_1": 0.45,
+          "probability_2": 0.2,
+          "single_confidence": "低",
+          "source_match_number": 10,
+          "top_outcome": "1",
+          "triple_candidate_score": 81.03577442677285,
+          "uncertainty_score": 84.55840349790165
+        },
+        {
+          "bet_type": "single",
+          "coverage": 0.7,
+          "double_candidate_score": 33.165328391579806,
+          "draw_candidate": false,
+          "draw_inclusion_recommended": false,
+          "draw_inclusion_score": null,
+          "match_number": 11,
+          "outcomes": [
+            "1"
+          ],
+          "probability_0": 0.18,
+          "probability_1": 0.7,
+          "probability_2": 0.12,
+          "single_confidence": "高",
+          "source_match_number": 11,
+          "top_outcome": "1",
+          "triple_candidate_score": 39.91439406989577,
+          "uncertainty_score": 40.51345974821173
+        },
+        {
+          "bet_type": "single",
+          "coverage": 0.38,
+          "double_candidate_score": 92.84306328125551,
+          "draw_candidate": true,
+          "draw_inclusion_recommended": false,
+          "draw_inclusion_score": null,
+          "match_number": 12,
+          "outcomes": [
+            "1"
+          ],
+          "probability_0": 0.35,
+          "probability_1": 0.38,
+          "probability_2": 0.27,
+          "single_confidence": "低",
+          "source_match_number": 12,
+          "top_outcome": "1",
+          "triple_candidate_score": 92.69767593750662,
+          "uncertainty_score": 94.65228859375772
+        },
+        {
+          "bet_type": "double",
+          "coverage": 0.6799999999999999,
+          "double_candidate_score": 94.2891411663525,
+          "draw_candidate": true,
+          "draw_inclusion_recommended": false,
+          "draw_inclusion_score": null,
+          "match_number": 13,
+          "outcomes": [
+            "1",
+            "0"
+          ],
+          "probability_0": 0.33,
+          "probability_1": 0.35,
+          "probability_2": 0.32,
+          "single_confidence": "低",
+          "source_match_number": 13,
+          "top_outcome": "1",
+          "triple_candidate_score": 97.46096939962298,
+          "uncertainty_score": 97.70779763289347
+        }
+      ],
+      "ticket_count": 12
+    }
+  },
+  "probability_input": [
+    {
+      "0": 18,
+      "1": 70,
+      "2": 12,
+      "draw_candidate": false,
+      "draw_candidate_reasons": "",
+      "toto_match_number": 1,
+      "対戦カード": "ホーム1 vs アウェイ1"
+    },
+    {
+      "0": 35,
+      "1": 38,
+      "2": 27,
+      "draw_candidate": true,
+      "draw_candidate_reasons": "引分確率が設定閾値以上",
+      "toto_match_number": 2,
+      "対戦カード": "ホーム2 vs アウェイ2"
+    },
+    {
+      "0": 33,
+      "1": 35,
+      "2": 32,
+      "draw_candidate": true,
+      "draw_candidate_reasons": "引分確率が設定閾値以上",
+      "toto_match_number": 3,
+      "対戦カード": "ホーム3 vs アウェイ3"
+    },
+    {
+      "0": 10,
+      "1": 50,
+      "2": 40,
+      "draw_candidate": false,
+      "draw_candidate_reasons": "",
+      "toto_match_number": 4,
+      "対戦カード": "ホーム4 vs アウェイ4"
+    },
+    {
+      "0": 35,
+      "1": 45,
+      "2": 20,
+      "draw_candidate": true,
+      "draw_candidate_reasons": "引分確率が設定閾値以上",
+      "toto_match_number": 5,
+      "対戦カード": "ホーム5 vs アウェイ5"
+    },
+    {
+      "0": 18,
+      "1": 70,
+      "2": 12,
+      "draw_candidate": false,
+      "draw_candidate_reasons": "",
+      "toto_match_number": 6,
+      "対戦カード": "ホーム6 vs アウェイ6"
+    },
+    {
+      "0": 35,
+      "1": 38,
+      "2": 27,
+      "draw_candidate": true,
+      "draw_candidate_reasons": "引分確率が設定閾値以上",
+      "toto_match_number": 7,
+      "対戦カード": "ホーム7 vs アウェイ7"
+    },
+    {
+      "0": 33,
+      "1": 35,
+      "2": 32,
+      "draw_candidate": true,
+      "draw_candidate_reasons": "引分確率が設定閾値以上",
+      "toto_match_number": 8,
+      "対戦カード": "ホーム8 vs アウェイ8"
+    },
+    {
+      "0": 10,
+      "1": 50,
+      "2": 40,
+      "draw_candidate": false,
+      "draw_candidate_reasons": "",
+      "toto_match_number": 9,
+      "対戦カード": "ホーム9 vs アウェイ9"
+    },
+    {
+      "0": 35,
+      "1": 45,
+      "2": 20,
+      "draw_candidate": true,
+      "draw_candidate_reasons": "引分確率が設定閾値以上",
+      "toto_match_number": 10,
+      "対戦カード": "ホーム10 vs アウェイ10"
+    },
+    {
+      "0": 18,
+      "1": 70,
+      "2": 12,
+      "draw_candidate": false,
+      "draw_candidate_reasons": "",
+      "toto_match_number": 11,
+      "対戦カード": "ホーム11 vs アウェイ11"
+    },
+    {
+      "0": 35,
+      "1": 38,
+      "2": 27,
+      "draw_candidate": true,
+      "draw_candidate_reasons": "引分確率が設定閾値以上",
+      "toto_match_number": 12,
+      "対戦カード": "ホーム12 vs アウェイ12"
+    },
+    {
+      "0": 33,
+      "1": 35,
+      "2": 32,
+      "draw_candidate": true,
+      "draw_candidate_reasons": "引分確率が設定閾値以上",
+      "toto_match_number": 13,
+      "対戦カード": "ホーム13 vs アウェイ13"
+    }
+  ]
+}

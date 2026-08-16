@@ -313,6 +313,43 @@ class ActiveVersion7BSettings:
         return VERSION7B_MODEL_VERSION if self.adopted else "Version7-A"
 
 
+def prediction_settings_snapshot(
+    active_settings: ActiveVersion7BSettings,
+    *,
+    draw_settings: DrawSettings,
+    model_options: Mapping[str, Any],
+    prediction_time: Optional[datetime] = None,
+    strategy_backtest_cutoff_at: Optional[datetime] = None,
+) -> dict[str, Any]:
+    """予測時点のVersion・係数・画面スイッチを履歴用に固定する。"""
+
+    draw_settings.validate()
+    snapshot = {
+        "schema_version": 1,
+        "prediction_version": active_settings.version_label,
+        "adopted": active_settings.adopted,
+        "adopted_at": active_settings.adopted_at,
+        "draw_override": active_settings.draw_override,
+        "model_parameters": active_settings.parameters.model.as_dict(),
+        "draw_parameters": draw_settings.as_dict(),
+        "model_options": {
+            str(key): bool(value) for key, value in model_options.items()
+        },
+    }
+    if prediction_time is not None:
+        snapshot["prediction_generated_at"] = prediction_time.astimezone(
+            JAPAN_TIMEZONE
+        ).isoformat()
+    if strategy_backtest_cutoff_at is not None:
+        cutoff = strategy_backtest_cutoff_at.astimezone(JAPAN_TIMEZONE)
+        snapshot["strategy_backtest_cutoff_at"] = cutoff.isoformat()
+        snapshot["strategy_backtest_eligible"] = bool(
+            prediction_time is not None
+            and prediction_time.astimezone(JAPAN_TIMEZONE) < cutoff
+        )
+    return snapshot
+
+
 def _active_version7a_draw_settings() -> DrawSettings:
     # 遅延importにより、Version7-A最適化モジュールとの循環importを避ける。
     try:

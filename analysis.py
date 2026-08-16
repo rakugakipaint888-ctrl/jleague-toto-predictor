@@ -37,6 +37,7 @@ from prediction_history import (
     PredictionHistoryRecord,
     PredictionHistoryManager,
     history_csv_bytes,
+    normalize_optional_bool,
 )
 
 
@@ -224,6 +225,30 @@ def _history_has_official_results(
             for number in required_numbers
         )
     )
+
+
+def _strategy_backtest_eligibility(
+    history: pd.DataFrame,
+    prediction_version: str,
+    round_id: int,
+) -> Optional[bool]:
+    """Version7.5以後に明示保存したcutoff適格性を返す。旧履歴はNone。"""
+
+    if "strategy_backtest_eligible" not in history.columns:
+        return None
+    selected = _history_for_version(history, prediction_version)
+    if selected.empty:
+        return None
+    selected = selected.loc[selected["_round"].astype(int) == int(round_id)]
+    values = [
+        normalized
+        for normalized in (
+            normalize_optional_bool(value)
+            for value in selected["strategy_backtest_eligible"]
+        )
+        if normalized is not None
+    ]
+    return all(values) if values else None
 
 
 def _backtest_excluded_message(round_id: int) -> str:
@@ -581,6 +606,18 @@ def reconcile_saved_strategy_history(
         if toto_round is None:
             excluded_round_ids.append(round_id)
             messages.append(_backtest_excluded_message(round_id))
+            continue
+
+        if _strategy_backtest_eligibility(
+            history,
+            prediction_version,
+            round_id,
+        ) is False:
+            excluded_round_ids.append(round_id)
+            messages.append(
+                f"第{round_id}回は予測保存時刻が開催初日cutoff以後のため、"
+                "バックテスト対象外です。"
+            )
             continue
 
         if _history_has_official_results(

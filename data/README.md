@@ -54,7 +54,8 @@ Version6～Version7-Bは`data/cache/`、`data/history/`、`data/config/`を
 - `toto_rounds.csv`：開催回、第1～13試合、試合日時、実結果、公式配当
 - `backtest_match_history.csv`：バックテスト用Jリーグ履歴の動的保存CSV
 - `../history/prediction_history.csv`：開催回・試合番号・Version別の予想履歴と
-  的中率、Brier Score、Log Loss、Calibration、的中期待値、ROI
+  的中率、Brier Score、Log Loss、Calibration、的中期待値、ROI。Version7.5以後の
+  新規履歴は引分候補、候補理由、予測時設定Snapshot、戦略バックテストcutoffも保存
 - `../history/version7a_optimization_history.csv`：実行日時、Trial数、時系列の
   Training／Validation期間・試合数、Best Score・係数、全体・引分指標、
   Version6比較、乱数seed
@@ -158,3 +159,12 @@ Run IDは実行ごとに一意で、同じ条件の再実行は共通の設定Fi
 このため、同じ100 Trialを再実行しても旧実行を削除・置換しません。認識済みの旧列は
 既存行を保持したまま新列へ移行します。Final Validation列はTraining内で確定した
 Best Trialにだけ保存し、他TrialのFinal Validationは計算・保存しません。
+
+Version7.5以後に通常予想で保存したVersion7-B行は、P(1)・P(0)・P(2)とVersionに加え、
+`draw_candidate`、`draw_candidate_reasons`、`prediction_settings_json`、
+`strategy_backtest_eligible`、`strategy_backtest_cutoff_at`を保持します。
+設定JSONには保存Schema Version、採用Version、モデル係数、引分係数、採用日時、
+Elo・会場別・直近・順位補正の画面スイッチを含めます。旧CSVは不足列を空欄で読み込む
+後方互換を維持し、当時の設定を現在値で補完しません。
+開催初日`00:00 JST`以後に保存した新規ライブ予想は履歴として残しますが、買い目戦略
+バックテストでは評価対象外にします。旧履歴の適格性は推測で補完しません。

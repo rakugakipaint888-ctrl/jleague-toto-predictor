@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from typing import Any, Mapping, Optional, Sequence
 
 import numpy as np
@@ -73,6 +74,71 @@ TARGET_KEY_TO_LABEL = {
 }
 
 
+def _normalize_choice_state(
+    key: str,
+    options: Sequence[Any],
+    default: Any,
+) -> Any:
+    """古いrerun由来の不正なwidget値を既定値へ戻す。"""
+
+    value = st.session_state.get(key, default)
+    valid = False
+    if isinstance(value, str):
+        valid = value in options
+    elif isinstance(value, (int, np.integer)) and not isinstance(value, bool):
+        valid = int(value) in options
+    if not valid:
+        value = default
+        st.session_state[key] = default
+    return value
+
+
+def _bounded_int(value: Any, *, default: int, maximum: int) -> int:
+    """session_stateの任意入力を有限な範囲内の整数へ正規化する。"""
+
+    if isinstance(value, bool):
+        return default
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(number) or not number.is_integer():
+        return default
+    return max(0, min(int(number), int(maximum)))
+
+
+def _bounded_float(
+    value: Any,
+    *,
+    default: float,
+    minimum: float,
+    maximum: float,
+) -> float:
+    """None・NaN・Infinityを既定値へ戻し、有限範囲へ収める。"""
+
+    if isinstance(value, bool):
+        return default
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(number):
+        return default
+    return max(minimum, min(number, maximum))
+
+
+def _valid_manual_outcomes(value: Any, expected_count: int) -> bool:
+    if not isinstance(value, (list, tuple)) or len(value) != expected_count:
+        return False
+    try:
+        return (
+            len(set(value)) == expected_count
+            and all(outcome in TOTO_OUTCOMES for outcome in value)
+        )
+    except TypeError:
+        return False
+
+
 def render_bet_optimization_tab(
     *,
     prediction_history_manager: Any,
@@ -120,9 +186,15 @@ def _render_current_optimizer(
     info_columns[0].metric("開催回", round_label)
     info_columns[1].metric("使用確率", version_label)
 
+    target_options = tuple(TARGET_LABEL_TO_KEY)
+    _normalize_choice_state(
+        "version7c_target",
+        target_options,
+        target_options[0],
+    )
     target_label_value = st.selectbox(
         "対象くじ",
-        options=tuple(TARGET_LABEL_TO_KEY),
+        options=target_options,
         key="version7c_target",
     )
     target = TARGET_LABEL_TO_KEY[target_label_value]
@@ -155,11 +227,17 @@ def _render_current_optimizer(
     amount_columns[1].metric("購入金額", f"{purchase_amount:,}円")
 
     budget_yen = _budget_input(target)
-    threshold_default = float(
-        st.session_state.get(
-            "latest_prediction_draw_threshold",
-            getattr(active_draw_settings, "candidate_threshold", 0.25),
-        )
+    active_threshold = _bounded_float(
+        getattr(active_draw_settings, "candidate_threshold", 0.25),
+        default=0.25,
+        minimum=0.0,
+        maximum=1.0,
+    )
+    threshold_default = _bounded_float(
+        st.session_state.get("latest_prediction_draw_threshold"),
+        default=active_threshold,
+        minimum=0.0,
+        maximum=1.0,
     )
     draw_threshold = _draw_threshold_input(target, threshold_default)
     draw_margin = float(getattr(active_draw_settings, "candidate_margin", 0.05))
@@ -270,6 +348,19 @@ def _render_plan(plan: BetPlan, *, budget_yen: Optional[int]) -> None:
             st.session_state[type_key] = recommendation.bet_type
         if outcomes_key not in st.session_state:
             st.session_state[outcomes_key] = list(recommendation.outcomes)
+        bet_type = _normalize_choice_state(
+            type_key,
+            (BET_TYPE_SINGLE, BET_TYPE_DOUBLE, BET_TYPE_TRIPLE),
+            recommendation.bet_type,
+        )
+        expected_count = BET_TYPE_COUNTS[bet_type]
+        raw_outcomes = st.session_state.get(outcomes_key)
+        if not _valid_manual_outcomes(raw_outcomes, expected_count):
+            st.session_state[outcomes_key] = list(
+                TOTO_OUTCOMES
+                if expected_count == 3
+                else analysis.ranked_outcomes[:expected_count]
+            )
 
         with st.expander(
             f"第{prediction.match_number}試合 "
@@ -290,11 +381,16 @@ def _render_plan(plan: BetPlan, *, budget_yen: Optional[int]) -> None:
                     key=outcomes_key,
                 )
             )
-            expected_count = BET_TYPE_COUNTS[st.session_state[type_key]]
+            bet_type = _normalize_choice_state(
+                type_key,
+                (BET_TYPE_SINGLE, BET_TYPE_DOUBLE, BET_TYPE_TRIPLE),
+                recommendation.bet_type,
+            )
+            expected_count = BET_TYPE_COUNTS[bet_type]
             if len(selected) != expected_count:
                 manual_valid = False
                 st.error(
-                    f"{BET_TYPE_LABELS[st.session_state[type_key]]}は"
+                    f"{BET_TYPE_LABELS[bet_type]}は"
                     f"{expected_count}結果を選択してください。"
                 )
             else:
@@ -422,11 +518,15 @@ def _render_strategy_backtest(
         )
     )
     preferred = settings["prediction_version"]
-    default_index = (
-        available_versions.index(preferred)
-        if preferred in available_versions
-        else len(available_versions) - 1
+    default_version = (
+        preferred if preferred in available_versions else available_versions[-1]
     )
+    _normalize_choice_state(
+        "version7c_backtest_version",
+        available_versions,
+        default_version,
+    )
+    default_index = available_versions.index(default_version)
 
     with st.expander("過去データで買い目戦略を比較"):
         version = st.selectbox(
@@ -668,19 +768,23 @@ def _count_input(
     key_prefix: str,
 ) -> int:
     options: tuple[int | str, ...] = (*presets, "任意指定")
+    choice_key = f"{key_prefix}_choice_{target}"
+    _normalize_choice_state(choice_key, options, default)
     choice = st.selectbox(
         label,
         options=options,
         index=options.index(default),
-        key=f"{key_prefix}_choice_{target}",
+        key=choice_key,
     )
     if choice != "任意指定":
         return int(choice)
     custom_key = f"{key_prefix}_custom_{target}"
     if custom_key in st.session_state:
-        current = int(st.session_state[custom_key])
-        if current > maximum:
-            st.session_state[custom_key] = maximum
+        st.session_state[custom_key] = _bounded_int(
+            st.session_state[custom_key],
+            default=0,
+            maximum=maximum,
+        )
     input_options: dict[str, Any] = {
         "label": f"{label}（任意）",
         "min_value": 0,
@@ -699,6 +803,8 @@ def _budget_input(target: str) -> Optional[int]:
         *BUDGET_PRESETS_YEN,
         "任意指定",
     )
+    choice_key = f"version7c_budget_choice_{target}"
+    _normalize_choice_state(choice_key, options, DEFAULT_BUDGET_YEN)
     choice = st.selectbox(
         "予算上限",
         options=options,
@@ -706,13 +812,19 @@ def _budget_input(target: str) -> Optional[int]:
         format_func=lambda value: (
             f"{value:,}円" if isinstance(value, int) else str(value)
         ),
-        key=f"version7c_budget_choice_{target}",
+        key=choice_key,
     )
     if choice == "上限なし":
         return None
     if choice != "任意指定":
         return int(choice)
     custom_key = f"version7c_budget_custom_{target}"
+    if custom_key in st.session_state:
+        st.session_state[custom_key] = _bounded_int(
+            st.session_state[custom_key],
+            default=DEFAULT_BUDGET_YEN,
+            maximum=MAX_CUSTOM_BUDGET_YEN,
+        )
     options_for_input: dict[str, Any] = {
         "label": "予算上限（任意・円）",
         "min_value": 0,
@@ -730,6 +842,8 @@ def _draw_threshold_input(target: str, default: float) -> float:
     choices: tuple[int | str, ...] = (20, 25, 30, 35, 40, "任意指定")
     integer_default = int(round(default_percent))
     initial = integer_default if integer_default in choices else "任意指定"
+    choice_key = f"version7c_draw_threshold_choice_{target}"
+    _normalize_choice_state(choice_key, choices, initial)
     choice = st.selectbox(
         "引分候補閾値",
         options=choices,
@@ -737,7 +851,7 @@ def _draw_threshold_input(target: str, default: float) -> float:
         format_func=lambda value: (
             f"{value}%" if isinstance(value, int) else str(value)
         ),
-        key=f"version7c_draw_threshold_choice_{target}",
+        key=choice_key,
         help=(
             "P(0)が閾値未満なら通常の確率上位2結果を使います。閾値以上でも"
             "0を強制せず、0が確率3位の場合だけDraw Inclusion Scoreで"
@@ -747,6 +861,13 @@ def _draw_threshold_input(target: str, default: float) -> float:
     if choice != "任意指定":
         return float(choice) / 100.0
     custom_key = f"version7c_draw_threshold_custom_{target}"
+    if custom_key in st.session_state:
+        st.session_state[custom_key] = _bounded_float(
+            st.session_state[custom_key],
+            default=default_percent,
+            minimum=0.0,
+            maximum=100.0,
+        )
     options_for_input: dict[str, Any] = {
         "label": "引分候補閾値（任意・%）",
         "min_value": 0.0,
@@ -761,6 +882,16 @@ def _draw_threshold_input(target: str, default: float) -> float:
 
 def _initialize_manual_state(plan: BetPlan) -> None:
     fingerprint = plan_fingerprint(plan)
+    current_prefixes = (
+        f"version7c_type_{fingerprint}_",
+        f"version7c_outcomes_{fingerprint}_",
+    )
+    for key in list(st.session_state):
+        text_key = str(key)
+        if text_key.startswith(
+            ("version7c_type_", "version7c_outcomes_")
+        ) and not text_key.startswith(current_prefixes):
+            del st.session_state[key]
     for recommendation in plan.recommendations:
         match_number = recommendation.analysis.prediction.match_number
         st.session_state[
@@ -777,6 +908,9 @@ def _sync_manual_outcomes(
     ranked_outcomes: tuple[str, str, str],
 ) -> None:
     bet_type = st.session_state.get(type_key, BET_TYPE_SINGLE)
+    if bet_type not in BET_TYPE_COUNTS:
+        bet_type = BET_TYPE_SINGLE
+        st.session_state[type_key] = bet_type
     count = BET_TYPE_COUNTS[bet_type]
     st.session_state[outcomes_key] = list(
         TOTO_OUTCOMES if count == 3 else ranked_outcomes[:count]

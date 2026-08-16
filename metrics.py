@@ -7,12 +7,30 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Iterable, Mapping, Optional, Sequence
+from typing import Any, Iterable, Mapping, Optional, Sequence
 
 
 TOTO_OUTCOMES = ("1", "0", "2")
 DEFAULT_TOTO_STAKE_YEN = 100
 PROBABILITY_EPSILON = 1e-15
+
+
+def normalize_toto_outcome(value: Any) -> str:
+    """CSVやpandasで数値化された実結果を1・0・2へ正規化する。"""
+
+    if value is None or isinstance(value, bool):
+        return ""
+    text = str(value).strip()
+    if text in TOTO_OUTCOMES:
+        return text
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return ""
+    if not math.isfinite(number) or not number.is_integer():
+        return ""
+    normalized = str(int(number))
+    return normalized if normalized in TOTO_OUTCOMES else ""
 
 
 @dataclass(frozen=True)

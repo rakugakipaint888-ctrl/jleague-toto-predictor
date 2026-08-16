@@ -123,6 +123,21 @@ class Version7CCountAndOptimizationTest(unittest.TestCase):
                     calculate_purchase_amount(doubles, triples), amount
                 )
 
+    def test_explicitly_ineligible_prediction_history_is_not_backtested(self) -> None:
+        history = completed_history().assign(strategy_backtest_eligible=False)
+
+        results = compare_bet_strategies(
+            history,
+            target="toto",
+            prediction_version="Version7-A",
+            double_count=3,
+            triple_count=0,
+            draw_candidate_threshold=0.25,
+            draw_candidate_margin=0.05,
+        )
+
+        self.assertTrue(all(result.evaluated_rounds == 0 for result in results))
+
     def test_toto_and_mini_targets_use_official_source_order(self) -> None:
         frame = probability_frame()
         toto = build_match_predictions(frame, "toto")

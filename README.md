@@ -41,6 +41,57 @@ J1・J2・J3の試合を対象に、直近成績、会場別成績、順位表�
 - 公式データ → CSV → 手入力の自動切替
 - 補正別の欠損フォールバックとVersion4予測への最終フォールバック
 
+## Version7.5
+
+Version7.5は新しい予測モデルや評価指標を追加するReleaseではありません。
+Version7-CまでのP(1)・P(0)・P(2)、本命、期待得点、引分判定、買い目、Coverageを
+変えずに、Version8以降を安全に開発するための総点検・安定化Releaseです。表示用の
+アプリVersionと予測履歴のモデルVersionを分離しているため、過去の`Version6`、
+`Version7-A`、`Version7-B`行は書き換えません。
+
+実施内容は次のとおりです。
+
+- Version7-C開始時点の確率・本命・買い目・口数・購入金額・Coverage・
+  Draw Inclusionを回帰Fixtureへ固定
+- 実結果の`1`／`0`／`2`変換を共通化し、数値化されたCSVの`0.0`も同じ定義で処理
+- 予想履歴、開催回、買い目、バックテスト、払戻、Session Stateのデータ契約を文書化
+- pandasの先頭位置取得を`.iloc`／`.iat`で監査し、label `0`へ依存しないことを回帰確認
+- 古いSession Stateの不正な型、`None`、NaN、Infinity、範囲外値をwidget生成前に正規化
+- Version7-Bの今後の通常予想に、当時の確率・Version・モデル係数・引分係数・
+  画面スイッチ・引分候補情報・戦略バックテストcutoff適格性を一緒に保存
+- CSV欠損・破損、履歴なし、払戻なし、未確定結果、公式取得失敗の既存fallbackを回帰確認
+- 新規Python processのclean import、Streamlit実起動、AppTestによるtoto／mini A／mini B、
+  手動変更、CSV、Version6／7-A／7-B戦略経路を確認
+
+回帰Fixtureは`tests/fixtures/version75_regression_baseline.json`です。浮動小数は
+絶対誤差`1e-12`、本命・区分・買い目は完全一致で比較します。予測式、Version7-Aの
+引分式、Version7-Bの最適化式、Version7-Cの各Score・Coverage式は変更していません。
+データ契約と監査判断は[`docs/version75_data_contracts.md`](docs/version75_data_contracts.md)と
+[`docs/version75_audit.md`](docs/version75_audit.md)に記録しています。
+
+### バックテストの安全条件
+
+開催回の最初の試合日`00:00 JST`をcutoffとし、それより前に完了した試合だけから
+順位相当値、勝点、得失点差、Elo、直近成績、会場別成績を再構成します。後日の順位、
+シーズン終了順位、対象試合結果、将来の直近成績は入力しません。13試合すべての
+公式`actual_result`が`1`・`0`・`2`で確認できた開催回だけを評価し、未確定回は
+的中率・払戻・収支・ROIを0として扱わず「未評価」にします。
+
+Version7-Aはこの時点再構成を使って確定回をオンデマンド生成できます。Version7-Bは
+過去時点の採用係数を正確に復元できないため、当時保存された履歴がある場合だけ評価し、
+現在設定による過去予想の捏造は行いません。Version7.5以後に保存するVersion7-B履歴は
+設定Snapshotを持ち、cutoff以後に保存した新規予想は戦略バックテストから除外します。
+Version7.5より前の欠損履歴を遡って補完はしません。
+
+### Version7.5の既知の制限
+
+- 公式サイト障害時の実データ取得可否は外部サービスに依存する
+- Version7.5より前のVersion7-B履歴に当時の設定がなければ再現できない
+- 過去履歴に引分候補情報がなければ、その情報だけは遡及復元しない
+- mini toto払戻形式は保存していないため、mini A／Bの収支・ROIは推測しない
+- Streamlit hot rerunで旧moduleが残る既知事象に対し、Version7-B入口だけは検証付き
+  reloadを維持する。通常のclean importには循環依存がない
+
 ## Version7-C
 
 Version7-Cの目的は、Version7-Aまたは採用済みVersion7-Bが通常予想で算出した
@@ -250,9 +301,9 @@ Version7-Bは当時採用されていた最適パラメータを現在から正�
 - toto投票率、期待値、配当妙味、投票率との乖離は最適化に使用しない
 - Draw Inclusion Scoreの重み・60点基準・Coverage低下上限は固定値であり、
   十分な確定結果標本による実績校正は未完了
-- 現行の過去予想履歴は当時の`draw_candidate`と候補理由を保存していないため、
-  履歴バックテストでは最終確率・現在指定した閾値・連続引分Signalを使い、
-  当時の候補フラグ加点は復元しない
+- Version7.5より前の過去予想履歴は当時の`draw_candidate`と候補理由を保存して
+  いないため、欠損行では最終確率・現在指定した閾値・連続引分Signalを使い、
+  当時の候補フラグ加点は遡及復元しない。Version7.5以後の新規履歴は保存する
 - mini totoの対象は現行toto公式順のA＝1～5、B＝6～10を使用する
 - 取消・中止・くじ不成立時の購入判断や返還処理は扱わない
 - 自動購入、外部サイトログイン、決済、購入ボタン操作は実装しない
@@ -260,15 +311,12 @@ Version7-Bは当時採用されていた最適パラメータを現在から正�
 投票率を使う期待値最適化、予算からの区分数自動探索、試合間相関、より高度な
 戦略安定性評価は今後の拡張対象です。
 
-### Version7.5への引継ぎ
+### Version8への引継ぎ
 
-Version7-Cでは既存の通常予想、Version7-A／7-B、履歴、バックテストへ大規模な
-構造変更を加えていません。Version7.5では、コード全体の重複処理、設定管理、import、
-テスト、処理速度を整理し、Version7-BのBest Trial選定、Walk Forward／Fold設計、
-Robust Training Score、Final Validation分離を実データでも再検証します。
-Version7-C側では、Uncertainty／Double／Triple／Draw Inclusion Score重みと基準値の
-実績検証、旧方式との買い目バックテスト標本の拡充、mini toto払戻形式、
-組み合わせ出力のストリーミング化を引き継ぎます。
+Version7.5で固定した回帰Fixtureとデータ契約を、Version8の変更判定に使用します。
+Version8で係数・特徴量・予測結果を変える場合は、安定化変更とモデル変更を同じCommitへ
+混在させず、変更理由とValidation差を明示します。mini toto払戻形式、試合間相関、
+投票率を使う期待値最適化は引き続き未実装です。
 
 ## Version7-B
 
@@ -968,6 +1016,7 @@ Eloデータを取得できないため、Elo補正なしで計算しました�
 - `bet_export.py`：試合別買い目と全購入組み合わせのCSV
 - `bet_evaluation.py`：買い目戦略バックテスト、的中・払戻・ROI判定
 - `bet_optimization_ui.py`：Version7-C買い目最適化、履歴準備、戦略比較タブ
+- `app_version.py`：予測履歴Versionと分離した表示用アプリVersion
 - `app.py`：各モジュールを接続する入力・予想画面
 
 `elo_rating.py`は`teams.py`をimportしません。クラブ構成と名称正規化関数は
@@ -1138,7 +1187,7 @@ streamlit run app.py
 テストは次のコマンドで実行します。
 
 ```bash
-python -m unittest discover -s tests -v
+python -m pytest -q
 ```
 
 ## 開発ロードマップ
@@ -1152,8 +1201,8 @@ python -m unittest discover -s tests -v
 - Version7-A：引分予想強化、引分専用評価、時系列分割、Optuna小規模探索
 - Version7-B：既存モデル全体の4方式探索、Walk Forward、安定性・信頼区間
 - Version7-C：確率に基づく区分配置、Coverage、手動調整、CSV、戦略比較
-- Version7.5：全体リファクタリング、設定・import・重複整理、テスト・速度強化、
-  Version7-B Best Trial／Walk Forward／Fold／Robust Score／Final Validation再検証
+- Version7.5：予測結果を変えない総点検、データ契約、pandas／Session State安全化、
+  バックテスト監査、回帰Fixture、clean import、Streamlit E2E
 - Version7-D：買い目・モデルのより高度な最適化と安定性評価
 - Version8：AIによる重み自動調整・モデル改善提案
 - Version9：独自判断入力・AIコメント生成
