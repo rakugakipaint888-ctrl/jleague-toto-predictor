@@ -44,7 +44,7 @@ from history_manager import (
 )
 from improvement_history import ImprovementHistoryManager
 from improvement_ui import render_improvement_recommendations_tab
-from live_history import LiveHistoryManager
+from live_history import LiveHistoryManager, generate_prediction_run_id
 from live_history_ui import render_live_history_tab
 from elo_rating import (
     EloCalculationResult,
@@ -1745,6 +1745,11 @@ with prediction_tab:
                 history_settings
             )
             st.session_state["latest_prediction_generated_at"] = prediction_time
+            # 予測を作った時点でrunを確定し、買い目・実戦保存まで同じIDを使う。
+            # 保存ボタン押下時には新しいrun IDを作らない。
+            st.session_state["latest_prediction_run_id"] = (
+                generate_prediction_run_id(prediction_time)
+            )
             st.session_state["latest_prediction_toto_round"] = current_toto_round
             st.session_state["latest_prediction_source_name"] = (
                 toto_round_result.source_name

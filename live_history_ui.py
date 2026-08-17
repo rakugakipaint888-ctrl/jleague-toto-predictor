@@ -284,6 +284,9 @@ def _render_save_current_prediction(manager: LiveHistoryManager) -> None:
     toto_round = st.session_state.get("latest_prediction_toto_round")
     settings = st.session_state.get("latest_prediction_settings_snapshot")
     predicted_at = st.session_state.get("latest_prediction_generated_at")
+    prediction_run_id = str(
+        st.session_state.get("latest_prediction_run_id", "") or ""
+    )
     source_name = str(st.session_state.get("latest_prediction_source_name", ""))
     if (
         not isinstance(result_df, pd.DataFrame)
@@ -298,10 +301,21 @@ def _render_save_current_prediction(manager: LiveHistoryManager) -> None:
         )
         return
 
+    # デプロイ前から残るSession Stateだけを後方互換で一度補完する。新規予測は
+    # app.pyで予測成立時に生成され、以後のrerunでは変更しない。
+    if not prediction_run_id:
+        prediction_run_id = generate_prediction_run_id(predicted_at)
+        st.session_state["latest_prediction_run_id"] = prediction_run_id
+
     stored_ai_plan = st.session_state.get("version7c_ai_plan")
+    plan_source_run_id = str(
+        st.session_state.get("version7c_source_prediction_run_id", "") or ""
+    )
     ai_plan = (
         stored_ai_plan
         if isinstance(stored_ai_plan, BetPlan)
+        and plan_source_run_id == prediction_run_id
+        and stored_ai_plan.source_prediction_run_id == prediction_run_id
         and _plan_matches_prediction_frame(stored_ai_plan, result_df)
         else None
     )
@@ -320,7 +334,7 @@ def _render_save_current_prediction(manager: LiveHistoryManager) -> None:
             if st.session_state.get("version8a_saved_prediction_fingerprint") == fingerprint:
                 run_id = st.session_state.get("version8a_saved_prediction_run_id")
             else:
-                run_id = generate_prediction_run_id(predicted_at)
+                run_id = prediction_run_id
             outcome = manager.save_prediction(
                 result_df,
                 toto_round,
@@ -347,6 +361,12 @@ def _render_save_current_prediction(manager: LiveHistoryManager) -> None:
                 manual_plan = st.session_state.get("version7c_manual_plan")
                 if (
                     isinstance(manual_plan, BetPlan)
+                    and manual_plan.source_prediction_run_id
+                    == outcome.prediction_run_id
+                    and st.session_state.get(
+                        "version7c_manual_plan_source_prediction_run_id"
+                    )
+                    == outcome.prediction_run_id
                     and _plan_matches_prediction_frame(manual_plan, result_df)
                 ):
                     st.session_state["version8a_purchase_plan_fingerprint"] = (
@@ -441,12 +461,17 @@ def _render_purchase(
     st.subheader("実購入の記録")
     active_run_id = st.session_state.get("version8a_active_run_id")
     final_plan = st.session_state.get("version7c_manual_plan")
+    source_run_id = st.session_state.get(
+        "version7c_manual_plan_source_prediction_run_id"
+    )
     expected_plan_fingerprint = st.session_state.get(
         "version8a_purchase_plan_fingerprint"
     )
     if (
         active_run_id != run_id
         or not isinstance(final_plan, BetPlan)
+        or final_plan.source_prediction_run_id != run_id
+        or source_run_id != run_id
         or expected_plan_fingerprint != plan_fingerprint(final_plan)
     ):
         st.info(

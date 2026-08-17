@@ -267,6 +267,9 @@ def _render_current_optimizer(
         draw_threshold=draw_threshold,
         draw_margin=draw_margin,
     )
+    current_prediction_run_id = str(
+        st.session_state.get("latest_prediction_run_id", "") or ""
+    )
     if st.button(
         "買い目最適化を実行",
         type="primary",
@@ -283,8 +286,12 @@ def _render_current_optimizer(
                 triple_count=triple_count,
                 draw_candidate_threshold=draw_threshold,
                 draw_candidate_margin=draw_margin,
+                source_prediction_run_id=current_prediction_run_id,
             )
             st.session_state["version7c_ai_plan"] = plan
+            st.session_state["version7c_source_prediction_run_id"] = (
+                current_prediction_run_id
+            )
             st.session_state["version7c_plan_request"] = request_signature
             st.session_state["version7c_plan_generated_at"] = datetime.now(
                 JAPAN_TIMEZONE
@@ -292,18 +299,32 @@ def _render_current_optimizer(
             _initialize_manual_state(plan)
         except BetOptimizationError as error:
             st.session_state.pop("version7c_ai_plan", None)
+            st.session_state.pop("version7c_source_prediction_run_id", None)
             st.session_state.pop("version7c_plan_request", None)
             st.error(str(error))
         except (TypeError, ValueError):
             st.session_state.pop("version7c_ai_plan", None)
+            st.session_state.pop("version7c_source_prediction_run_id", None)
             st.session_state.pop("version7c_plan_request", None)
             st.error("予測確率または対象試合を確認できず、買い目を作成できませんでした。")
 
     plan = st.session_state.get("version7c_ai_plan")
     stored_request = st.session_state.get("version7c_plan_request")
+    stored_source_run_id = str(
+        st.session_state.get("version7c_source_prediction_run_id", "") or ""
+    )
     if isinstance(plan, BetPlan):
-        if stored_request == request_signature:
-            _render_plan(plan, budget_yen=budget_yen)
+        source_matches = (
+            bool(current_prediction_run_id)
+            and stored_source_run_id == current_prediction_run_id
+            and plan.source_prediction_run_id == current_prediction_run_id
+        )
+        if stored_request == request_signature and source_matches:
+            _render_plan(
+                plan,
+                budget_yen=budget_yen,
+                source_prediction_run_id=current_prediction_run_id,
+            )
         else:
             st.info("設定または予測結果が変わりました。買い目最適化を再実行してください。")
 
@@ -318,7 +339,12 @@ def _render_current_optimizer(
     }
 
 
-def _render_plan(plan: BetPlan, *, budget_yen: Optional[int]) -> None:
+def _render_plan(
+    plan: BetPlan,
+    *,
+    budget_yen: Optional[int],
+    source_prediction_run_id: str,
+) -> None:
     st.success(
         f"{target_label(plan.target)}：ダブル{plan.double_count}試合、"
         f"トリプル{plan.triple_count}試合を提案しました。"
@@ -412,6 +438,9 @@ def _render_plan(plan: BetPlan, *, budget_yen: Optional[int]) -> None:
         st.error(str(error))
         return
     st.session_state["version7c_manual_plan"] = manual_plan
+    st.session_state["version7c_manual_plan_source_prediction_run_id"] = (
+        source_prediction_run_id
+    )
     st.subheader("最終買い目")
     _plan_metrics(manual_plan, budget_yen=budget_yen, prefix="手動調整後")
     st.code(purchase_entry_text(manual_plan), language=None)

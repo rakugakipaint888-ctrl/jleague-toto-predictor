@@ -16,6 +16,7 @@ from bet_optimizer import (
     build_match_predictions,
     optimize_bet_plan,
 )
+from draw_predictor import probability_percentages
 from history_manager import JAPAN_TIMEZONE, TotoMatch, TotoPayouts, TotoRound
 from live_history import (
     BET_COLUMNS,
@@ -190,6 +191,76 @@ class LiveHistoryTest(unittest.TestCase):
         self.assertNotEqual(first.prediction_run_id, third.prediction_run_id)
         self.assertEqual(len(self.manager.load_rounds()), 2)
         self.assertEqual(len(self.manager.load_matches()), 26)
+
+    def test_full_precision_history_accepts_its_display_plan_and_rejects_another_run(self) -> None:
+        """最大剰余丸め差は許容し、同一開催回の別runはIDで拒否する。"""
+
+        frame = self.frame.copy()
+        for index, row in frame.iterrows():
+            full = (
+                {"1": 0.33334, "0": 0.33333, "2": 0.33333}
+                if index == 0
+                else {
+                    outcome: float(row[outcome]) / 100.0
+                    for outcome in ("1", "0", "2")
+                }
+            )
+            displayed = probability_percentages(full)
+            for outcome in ("1", "0", "2"):
+                frame.at[index, outcome] = displayed[outcome]
+                frame.at[index, f"live_probability_{outcome}"] = full[outcome]
+
+        # 33.334%は最大剰余法で33.4%となり、旧0.05pt許容を超えていた。
+        self.assertGreater(
+            abs(
+                float(frame.at[0, "1"]) / 100.0
+                - float(frame.at[0, "live_probability_1"])
+            ),
+            0.0005,
+        )
+        first_run_id = generate_prediction_run_id(PREDICTION_TIME)
+        second_run_id = generate_prediction_run_id(PREDICTION_TIME)
+        self.manager.save_prediction(
+            frame,
+            self.round,
+            settings_snapshot=self.settings,
+            prediction_time=PREDICTION_TIME,
+            source_name="toto公式",
+            prediction_run_id=first_run_id,
+        )
+        self.manager.save_prediction(
+            frame,
+            self.round,
+            settings_snapshot=self.settings,
+            prediction_time=PREDICTION_TIME,
+            source_name="toto公式",
+            prediction_run_id=second_run_id,
+        )
+        plan = optimize_bet_plan(
+            build_match_predictions(frame, "toto"),
+            target="toto",
+            double_count=5,
+            triple_count=0,
+            source_prediction_run_id=first_run_id,
+        )
+
+        recommendation_id = self.manager.save_recommended_bet(
+            first_run_id,
+            plan,
+            generated_at=PREDICTION_TIME,
+        )
+        self.assertTrue(recommendation_id.startswith("bet_recommended_"))
+        with self.assertRaisesRegex(
+            LiveHistoryValidationError,
+            "買い目は別の予測runから生成されています",
+        ):
+            self.manager.save_recommended_bet(
+                second_run_id,
+                plan,
+                generated_at=PREDICTION_TIME,
+            )
+        self.assertEqual(len(self.manager.load_bets(first_run_id)), 1)
+        self.assertTrue(self.manager.load_bets(second_run_id).empty)
 
     def test_same_run_with_changed_probability_is_rejected(self) -> None:
         run_id = self.save().prediction_run_id

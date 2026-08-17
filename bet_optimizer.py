@@ -147,6 +147,9 @@ class BetPlan:
     recommendations: tuple[BetRecommendation, ...]
     draw_candidate_threshold: float
     draw_candidate_margin: float
+    # 空文字はVersion8-A以前の呼び出しとの互換用。現行UIは予測時に確定した
+    # prediction_run_idを必ず渡し、別runへの誤保存を防ぐ。
+    source_prediction_run_id: str = ""
 
     @property
     def match_count(self) -> int:
@@ -468,6 +471,7 @@ def optimize_bet_plan(
     triple_count: int,
     draw_candidate_threshold: float = DEFAULT_DRAW_CANDIDATE_THRESHOLD,
     draw_candidate_margin: float = DEFAULT_DRAW_CANDIDATE_MARGIN,
+    source_prediction_run_id: str = "",
 ) -> BetPlan:
     """指定数を満たすダブル・トリプル配置を重複なしで最適化する。"""
 
@@ -507,6 +511,7 @@ def optimize_bet_plan(
         recommendations=recommendations,
         draw_candidate_threshold=float(draw_candidate_threshold),
         draw_candidate_margin=float(draw_candidate_margin),
+        source_prediction_run_id=str(source_prediction_run_id or ""),
     )
     if plan.double_count != doubles or plan.triple_count != triples:
         raise BetOptimizationError("指定した買い目数と最適化結果が一致しません。")

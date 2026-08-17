@@ -23,6 +23,7 @@ from typing import Any, Mapping, Optional, Sequence
 import pandas as pd
 
 from bet_optimizer import BetPlan, plan_fingerprint, target_source_match_numbers
+from draw_predictor import probability_percentages
 from history_manager import JAPAN_TIMEZONE, TotoRound, normalize_toto_payouts
 
 
@@ -40,9 +41,6 @@ DEFAULT_LIVE_BET_HISTORY_PATH = (
 
 LIVE_HISTORY_SCHEMA_VERSION = 1
 PROBABILITY_TOLERANCE = 1e-9
-# Version7-Cは画面の小数1桁%を買い目へ渡すため、実戦履歴のフル精度確率との
-# 所属確認だけは最大剰余丸め1単位（0.1%）の半分を許容する。
-BET_PLAN_PROBABILITY_TOLERANCE = 0.0005000001
 TOTO_OUTCOMES = ("1", "0", "2")
 ROUND_STATUSES = (
     "predicted",
@@ -690,6 +688,13 @@ class LiveHistoryManager:
         source_recommendation_id: str,
     ) -> str:
         _validate_run_id(prediction_run_id)
+        if (
+            plan.source_prediction_run_id
+            and plan.source_prediction_run_id != prediction_run_id
+        ):
+            raise LiveHistoryValidationError(
+                "買い目は別の予測runから生成されています。再度最適化してください。"
+            )
         if record_type not in BET_RECORD_TYPES:
             raise LiveHistoryValidationError("買い目履歴区分が不正です。")
         if plan.target not in TARGETS:
@@ -1209,15 +1214,26 @@ def _validate_plan_against_matches(plan: BetPlan, matches: pd.DataFrame) -> None
             prediction.probability_0,
             prediction.probability_2,
         )
-        if any(
-            not math.isclose(
-                left,
-                right,
-                rel_tol=0.0,
-                abs_tol=BET_PLAN_PROBABILITY_TOLERANCE,
-            )
+        direct_match = all(
+            math.isclose(left, right, rel_tol=0.0, abs_tol=PROBABILITY_TOLERANCE)
             for left, right in zip(stored_probabilities, plan_probabilities)
-        ):
+        )
+        # 現行Version7-Cは表示用の小数1桁%から買い目を作る。Version8-Aが
+        # 保存するフル精度値を同じ既存の最大剰余法で表示値へ戻し、同一予測かを
+        # 決定論的に照合する。許容差を広げて別予測を通すことはしない。
+        displayed = probability_percentages(
+            dict(zip(TOTO_OUTCOMES, stored_probabilities))
+        )
+        display_match = all(
+            math.isclose(
+                displayed[outcome] / 100.0,
+                plan_probability,
+                rel_tol=0.0,
+                abs_tol=PROBABILITY_TOLERANCE,
+            )
+            for outcome, plan_probability in zip(TOTO_OUTCOMES, plan_probabilities)
+        )
+        if not direct_match and not display_match:
             raise LiveHistoryValidationError(
                 "買い目は別の予測runから生成されています。再度最適化してください。"
             )

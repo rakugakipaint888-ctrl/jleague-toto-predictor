@@ -13,6 +13,7 @@ import pandas as pd
 import streamlit as st
 from streamlit.testing.v1 import AppTest
 
+from bet_optimizer import plan_fingerprint
 from data_loader import CsvMatchDataSource
 from history_manager import TotoRoundLoadResult
 from live_history import LiveHistoryManager
@@ -210,6 +211,121 @@ class LiveHistoryStreamlitE2ETest(unittest.TestCase):
         self.assertEqual(self.live_manager.load_rounds().iloc[0]["round_status"], "pending_result")
         self.assertEqual(self.live_manager.load_rounds().iloc[0]["actual_result_count"], "0")
         self.assertEqual(set(self.live_manager.load_matches()["actual_result"]), {""})
+
+    def test_1647_style_32_ticket_purchase_run_link_survives_rerun_and_restart(self) -> None:
+        """実利用の32口フローと、同一開催回の別run遮断をE2Eで固定する。"""
+
+        app = AppTest.from_file(str(PROJECT_ROOT / "app.py")).run(timeout=30)
+        next(
+            item
+            for item in app.selectbox
+            if item.key == "draw_candidate_threshold_choice"
+        ).select(35)
+        self._button(app, "13試合を予想する").click()
+        app = app.run(timeout=30)
+        first_run_id = app.session_state["latest_prediction_run_id"]
+        self.assertTrue(str(first_run_id).startswith("run_"))
+
+        next(
+            item
+            for item in app.selectbox
+            if item.key == "version7c_double_choice_toto"
+        ).select(5)
+        next(
+            item
+            for item in app.selectbox
+            if item.key == "version7c_triple_choice_toto"
+        ).select(0)
+        next(
+            item
+            for item in app.selectbox
+            if item.key == "version7c_budget_choice_toto"
+        ).select(5_000)
+        next(
+            item
+            for item in app.selectbox
+            if item.key == "version7c_draw_threshold_choice_toto"
+        ).select(35)
+        next(
+            button for button in app.button if button.key == "version7c_optimize"
+        ).click()
+        app = app.run(timeout=30)
+
+        ai_plan = app.session_state["version7c_ai_plan"]
+        final_plan = app.session_state["version7c_manual_plan"]
+        self.assertEqual(ai_plan.ticket_count, 32)
+        self.assertEqual(ai_plan.purchase_amount_yen, 3_200)
+        self.assertEqual(final_plan.ticket_count, 32)
+        self.assertEqual(ai_plan.source_prediction_run_id, first_run_id)
+        self.assertEqual(
+            app.session_state["version7c_source_prediction_run_id"],
+            first_run_id,
+        )
+
+        # 操作を伴わない完全rerunでも、予測・買い目のrun IDは変化しない。
+        app = app.run(timeout=30)
+        self.assertEqual(app.session_state["latest_prediction_run_id"], first_run_id)
+        self.assertEqual(
+            app.session_state["version7c_source_prediction_run_id"],
+            first_run_id,
+        )
+        self.assertEqual(
+            app.session_state["version7c_manual_plan_source_prediction_run_id"],
+            first_run_id,
+        )
+
+        self._button(app, "実戦予測として保存").click()
+        app = app.run(timeout=30)
+        self.assertEqual(len(app.exception), 0)
+        self.assertEqual(len(app.error), 0)
+        self.assertEqual(app.session_state["version8a_active_run_id"], first_run_id)
+        self.assertEqual(
+            app.session_state["version8a_purchase_plan_fingerprint"],
+            plan_fingerprint(final_plan),
+        )
+        self._button(app, "この買い目を実際に購入したとして記録").click()
+        app = app.run(timeout=30)
+
+        purchased = self.live_manager.load_bets(first_run_id)
+        self.assertEqual(set(purchased["record_type"]), {"recommended", "purchased"})
+        actual = purchased.loc[purchased["record_type"] == "purchased"].iloc[0]
+        self.assertEqual(int(actual["ticket_count"]), 32)
+        self.assertEqual(int(actual["actual_purchase_amount_yen"]), 3_200)
+        self.assertIn(
+            "prediction_run_id",
+            self.live_manager.export_bets_csv().decode("utf-8-sig").splitlines()[0],
+        )
+
+        # 同じ開催回をもう一度予測すると別runになり、旧買い目は紐付かない。
+        self._button(app, "13試合を予想する").click()
+        app = app.run(timeout=30)
+        second_run_id = app.session_state["latest_prediction_run_id"]
+        self.assertNotEqual(second_run_id, first_run_id)
+        self.assertEqual(ai_plan.source_prediction_run_id, first_run_id)
+        self._button(app, "実戦予測として保存").click()
+        app = app.run(timeout=30)
+        self.assertEqual(len(app.exception), 0)
+        self.assertEqual(len(app.error), 0)
+        self.assertEqual(len(self.live_manager.load_rounds()), 2)
+        self.assertTrue(self.live_manager.load_bets(second_run_id).empty)
+        self.assertFalse(
+            any(
+                button.label == "この買い目を実際に購入したとして記録"
+                for button in app.button
+            )
+        )
+
+        # 新しいAppTest（新規Session）でもCSV上の実購入履歴は残る。
+        restarted = AppTest.from_file(str(PROJECT_ROOT / "app.py")).run(timeout=30)
+        self.assertEqual(len(restarted.exception), 0)
+        persisted = self.live_manager.load_bets(first_run_id)
+        self.assertEqual(set(persisted["record_type"]), {"recommended", "purchased"})
+        self.assertTrue(
+            any(
+                caption.value == "App Version: Version8"
+                for caption in restarted.caption
+            )
+        )
 
 
 def math_is_finite_positive(value: float) -> bool:
