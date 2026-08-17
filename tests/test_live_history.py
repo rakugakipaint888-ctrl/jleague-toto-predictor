@@ -15,6 +15,7 @@ from bet_optimizer import (
     apply_manual_selections,
     build_match_predictions,
     optimize_bet_plan,
+    plan_fingerprint,
 )
 from draw_predictor import probability_percentages
 from history_manager import JAPAN_TIMEZONE, TotoMatch, TotoPayouts, TotoRound
@@ -27,6 +28,7 @@ from live_history import (
     LiveHistoryStorageError,
     LiveHistoryValidationError,
     generate_prediction_run_id,
+    restore_recommended_bet_plan,
 )
 from live_history_ui import build_live_detail, build_live_summary
 
@@ -261,6 +263,81 @@ class LiveHistoryTest(unittest.TestCase):
             )
         self.assertEqual(len(self.manager.load_bets(first_run_id)), 1)
         self.assertTrue(self.manager.load_bets(second_run_id).empty)
+
+    def test_recommended_plan_restores_without_session_state_and_keeps_run_boundary(self) -> None:
+        run_id = self.save().prediction_run_id
+        plan = optimize_bet_plan(
+            build_match_predictions(self.frame, "toto"),
+            target="toto",
+            double_count=5,
+            triple_count=0,
+            source_prediction_run_id=run_id,
+        )
+        recommendation_id = self.manager.save_recommended_bet(
+            run_id,
+            plan,
+            generated_at=PREDICTION_TIME,
+        )
+        recommended = self.manager.load_bets(run_id).iloc[0].to_dict()
+
+        restored = restore_recommended_bet_plan(
+            run_id,
+            recommended,
+            self.manager.load_matches(run_id),
+        )
+
+        self.assertEqual(recommended["bet_record_id"], recommendation_id)
+        self.assertEqual(restored.source_prediction_run_id, run_id)
+        self.assertEqual(plan_fingerprint(restored), plan_fingerprint(plan))
+        self.assertEqual(restored.ticket_count, 32)
+        self.assertEqual(restored.purchase_amount_yen, 3_200)
+
+        another_run_id = self.save().prediction_run_id
+        with self.assertRaisesRegex(
+            LiveHistoryValidationError,
+            "prediction_run_id",
+        ):
+            restore_recommended_bet_plan(
+                another_run_id,
+                recommended,
+                self.manager.load_matches(another_run_id),
+            )
+
+    def test_same_run_same_purchase_is_idempotent_across_restart_time(self) -> None:
+        run_id = self.save().prediction_run_id
+        plan = optimize_bet_plan(
+            build_match_predictions(self.frame, "toto"),
+            target="toto",
+            double_count=5,
+            triple_count=0,
+            source_prediction_run_id=run_id,
+        )
+        recommendation_id = self.manager.save_recommended_bet(
+            run_id,
+            plan,
+            generated_at=PREDICTION_TIME,
+        )
+        first = self.manager.record_purchase(
+            run_id,
+            plan,
+            actual_purchase_amount_yen=3_200,
+            purchased_at=PREDICTION_TIME + timedelta(minutes=1),
+            source_recommendation_id=recommendation_id,
+        )
+        second = self.manager.record_purchase(
+            run_id,
+            plan,
+            actual_purchase_amount_yen=3_200,
+            purchased_at=PREDICTION_TIME + timedelta(hours=1),
+            source_recommendation_id=recommendation_id,
+        )
+
+        self.assertEqual(second, first)
+        bets = self.manager.load_bets(run_id)
+        self.assertEqual(
+            int((bets["record_type"].astype(str) == "purchased").sum()),
+            1,
+        )
 
     def test_same_run_with_changed_probability_is_rejected(self) -> None:
         run_id = self.save().prediction_run_id

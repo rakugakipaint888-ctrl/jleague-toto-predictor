@@ -11,12 +11,14 @@ from typing import Any, Mapping, Optional
 import pandas as pd
 import streamlit as st
 
-from bet_optimizer import BetPlan, plan_fingerprint
+from bet_export import bet_plan_display_frame, purchase_entry_text
+from bet_optimizer import BetPlan, plan_fingerprint, target_label
 from history_manager import JAPAN_TIMEZONE, TotoHistoryManager, TotoRound
 from live_history import (
     LiveHistoryError,
     LiveHistoryManager,
     generate_prediction_run_id,
+    restore_recommended_bet_plan,
 )
 
 
@@ -349,29 +351,33 @@ def _render_save_current_prediction(manager: LiveHistoryManager) -> None:
             st.session_state.pop("version8a_recommendation_id", None)
             st.session_state.pop("version8a_purchase_plan_fingerprint", None)
             if isinstance(ai_plan, BetPlan):
+                manual_plan = st.session_state.get("version7c_manual_plan")
+                final_plan = (
+                    manual_plan
+                    if (
+                        isinstance(manual_plan, BetPlan)
+                        and manual_plan.source_prediction_run_id
+                        == outcome.prediction_run_id
+                        and st.session_state.get(
+                            "version7c_manual_plan_source_prediction_run_id"
+                        )
+                        == outcome.prediction_run_id
+                        and _plan_matches_prediction_frame(manual_plan, result_df)
+                    )
+                    else ai_plan
+                )
                 generated_at = st.session_state.get("version7c_plan_generated_at")
                 recommendation_id = manager.save_recommended_bet(
                     outcome.prediction_run_id,
-                    ai_plan,
+                    final_plan,
                     generated_at=(
                         generated_at if isinstance(generated_at, datetime) else predicted_at
                     ),
                 )
                 st.session_state["version8a_recommendation_id"] = recommendation_id
-                manual_plan = st.session_state.get("version7c_manual_plan")
-                if (
-                    isinstance(manual_plan, BetPlan)
-                    and manual_plan.source_prediction_run_id
-                    == outcome.prediction_run_id
-                    and st.session_state.get(
-                        "version7c_manual_plan_source_prediction_run_id"
-                    )
-                    == outcome.prediction_run_id
-                    and _plan_matches_prediction_frame(manual_plan, result_df)
-                ):
-                    st.session_state["version8a_purchase_plan_fingerprint"] = (
-                        plan_fingerprint(manual_plan)
-                    )
+                st.session_state["version8a_purchase_plan_fingerprint"] = (
+                    plan_fingerprint(final_plan)
+                )
             if outcome.created:
                 st.success(
                     f"実戦予測を保存しました。run ID: {outcome.prediction_run_id}"
@@ -459,26 +465,128 @@ def _render_purchase(
     manager: LiveHistoryManager,
 ) -> None:
     st.subheader("実購入の記録")
+    run_bets = manager.load_bets(run_id)
+    run_matches = manager.load_matches(run_id)
+    recommended_rows = run_bets.loc[
+        run_bets["record_type"].astype(str) == "recommended"
+    ]
+    restored_candidates: list[tuple[dict[str, Any], BetPlan]] = []
+    for _, row in recommended_rows.iloc[::-1].iterrows():
+        try:
+            restored = restore_recommended_bet_plan(
+                run_id,
+                row.to_dict(),
+                run_matches,
+            )
+            restored_candidates.append((row.to_dict(), restored))
+        except LiveHistoryError as error:
+            st.warning(f"保存済みAI推奨買い目を購入候補にできません: {error}")
+
     active_run_id = st.session_state.get("version8a_active_run_id")
-    final_plan = st.session_state.get("version7c_manual_plan")
+    session_plan = st.session_state.get("version7c_manual_plan")
     source_run_id = st.session_state.get(
         "version7c_manual_plan_source_prediction_run_id"
     )
     expected_plan_fingerprint = st.session_state.get(
         "version8a_purchase_plan_fingerprint"
     )
+    session_candidate: Optional[tuple[dict[str, Any], BetPlan]] = None
     if (
-        active_run_id != run_id
-        or not isinstance(final_plan, BetPlan)
-        or final_plan.source_prediction_run_id != run_id
-        or source_run_id != run_id
-        or expected_plan_fingerprint != plan_fingerprint(final_plan)
+        active_run_id == run_id
+        and isinstance(session_plan, BetPlan)
+        and session_plan.source_prediction_run_id == run_id
+        and source_run_id == run_id
+        and expected_plan_fingerprint == plan_fingerprint(session_plan)
     ):
+        session_candidate = next(
+            (
+                candidate
+                for candidate in restored_candidates
+                if plan_fingerprint(candidate[1]) == plan_fingerprint(session_plan)
+            ),
+            None,
+        )
+
+    candidate = session_candidate
+    recovered_from_history = False
+    if candidate is None and len(restored_candidates) == 1:
+        candidate = restored_candidates[0]
+        recovered_from_history = True
+    elif candidate is None and len(restored_candidates) > 1:
+        candidate_by_id = {
+            str(row["bet_record_id"]): (row, plan)
+            for row, plan in restored_candidates
+        }
+        recommendation_id = st.selectbox(
+            "購入候補（同じprediction_run_idのAI推奨）",
+            options=list(candidate_by_id),
+            format_func=lambda value: _recommendation_option_label(
+                candidate_by_id[value][0]
+            ),
+            key=f"version8a_purchase_recommendation_{run_id}",
+        )
+        candidate = candidate_by_id[recommendation_id]
+        recovered_from_history = True
+
+    if candidate is None:
         st.info(
-            "現在の買い目最適化で作った最終買い目は、このrunを保存した直後だけ"
-            "購入記録にできます。履歴から買い目を自動購入することはありません。"
+            "同じprediction_run_id・開催回で保存されたAI推奨買い目がないため、"
+            "このrunの実購入は登録できません。履歴から自動購入することはありません。"
         )
         return
+    recommendation_row, final_plan = candidate
+    recommendation_id = str(recommendation_row["bet_record_id"])
+    if recovered_from_history:
+        st.info(
+            "Session Stateの最終買い目に依存せず、同じprediction_run_idで保存した"
+            "AI推奨買い目を購入候補として復元しました。"
+        )
+
+    summary_columns = st.columns(4)
+    summary_columns[0].metric("商品種別", target_label(final_plan.target))
+    summary_columns[1].metric("購入口数", f"{final_plan.ticket_count:,}口")
+    summary_columns[2].metric(
+        "購入予定金額", f"{final_plan.purchase_amount_yen:,}円"
+    )
+    summary_columns[3].metric(
+        "Coverage", f"{final_plan.estimated_full_coverage * 100.0:.2f}%"
+    )
+    st.caption(
+        "Coverageは保存時点のモデル確率から計算した参考指標であり、"
+        "実際の当選確率ではありません。"
+    )
+    st.dataframe(
+        bet_plan_display_frame(final_plan),
+        width="stretch",
+        hide_index=True,
+    )
+    with st.expander("買い目内容（転記用）"):
+        st.code(purchase_entry_text(final_plan), language=None)
+
+    purchased_rows = run_bets.loc[
+        (run_bets["record_type"].astype(str) == "purchased")
+        & (run_bets["target"].astype(str) == final_plan.target)
+    ]
+    plan_signature = _plan_selection_signature(final_plan)
+    already_purchased = next(
+        (
+            row
+            for _, row in purchased_rows.iterrows()
+            if (
+                str(row.get("source_recommendation_id", ""))
+                == recommendation_id
+                or _history_selection_signature(row) == plan_signature
+            )
+        ),
+        None,
+    )
+    if already_purchased is not None:
+        st.success(
+            "実購入登録済みです。買い目ID: "
+            f"{already_purchased.get('bet_record_id', '')}"
+        )
+        return
+
     amount_key = f"version8a_actual_amount_{run_id}_{plan_fingerprint(final_plan)}"
     if amount_key in st.session_state:
         value = _finite_nonnegative_int(
@@ -511,9 +619,6 @@ def _render_purchase(
             if not isinstance(purchased_at, datetime):
                 purchased_at = datetime.now(JAPAN_TIMEZONE)
                 st.session_state[time_key] = purchased_at
-            recommendation_id = str(
-                st.session_state.get("version8a_recommendation_id", "")
-            )
             bet_id = manager.record_purchase(
                 run_id,
                 final_plan,
@@ -524,6 +629,61 @@ def _render_purchase(
             st.success(f"実購入記録を保存しました。買い目ID: {bet_id}")
         except LiveHistoryError as error:
             st.error(str(error))
+
+
+def _recommendation_option_label(row: Mapping[str, Any]) -> str:
+    tickets = _finite_nonnegative_int(row.get("ticket_count"), 0)
+    amount = _finite_nonnegative_int(row.get("planned_purchase_amount_yen"), 0)
+    return (
+        f"{_TARGET_LABELS.get(str(row.get('target')), str(row.get('target')))} / "
+        f"{tickets:,}口 / {amount:,}円 / "
+        f"{row.get('generated_at', '')}"
+    )
+
+
+def _plan_selection_signature(
+    plan: BetPlan,
+) -> tuple[tuple[int, tuple[str, ...]], ...]:
+    return tuple(
+        sorted(
+            (
+                recommendation.analysis.prediction.source_match_number,
+                tuple(recommendation.outcomes),
+            )
+            for recommendation in plan.recommendations
+        )
+    )
+
+
+def _history_selection_signature(
+    row: Mapping[str, Any],
+) -> tuple[tuple[int, tuple[str, ...]], ...]:
+    try:
+        selections = json.loads(str(row.get("selections_json", "")))
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return ()
+    if not isinstance(selections, list):
+        return ()
+    normalized = []
+    for selection in selections:
+        if not isinstance(selection, Mapping):
+            return ()
+        try:
+            number = int(selection.get("source_match_number"))
+        except (TypeError, ValueError):
+            return ()
+        raw_outcomes = selection.get("outcomes", ())
+        if isinstance(raw_outcomes, str) or not isinstance(raw_outcomes, list):
+            return ()
+        outcomes = tuple(
+            outcome
+            for outcome in ("1", "0", "2")
+            if outcome in {str(value) for value in raw_outcomes}
+        )
+        if not outcomes or len(outcomes) != len(raw_outcomes):
+            return ()
+        normalized.append((number, outcomes))
+    return tuple(sorted(normalized))
 
 
 def _render_downloads(manager: LiveHistoryManager) -> None:

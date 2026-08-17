@@ -103,7 +103,9 @@ Version7-A/B引分係数、引分候補閾値、Elo・会場別・直近・順�
 
 ### AI推奨買い目と実購入買い目
 
-Version7-Cで生成したAI案は`recommended=True, purchased=False`として保存します。
+Version7-Cで確定した最終案（手動調整があればその内容）は
+`recommended=True, purchased=False`として保存します。同じ`prediction_run_id`の
+recommended履歴から復元するため、rerun・タブ移動・再接続後も購入候補を確認できます。
 「この買い目を実際に購入したとして記録」を押した場合だけ、購入日時、実購入金額、
 手動変更後の最終買い目を別の`purchased=True`行へ保存します。AI推奨を実購入や実利益として
 扱いません。外部totoサービスへの接続、決済、自動購入はありません。

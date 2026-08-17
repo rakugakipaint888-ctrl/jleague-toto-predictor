@@ -16,7 +16,7 @@ from streamlit.testing.v1 import AppTest
 from bet_optimizer import plan_fingerprint
 from data_loader import CsvMatchDataSource
 from history_manager import TotoRoundLoadResult
-from live_history import LiveHistoryManager
+from live_history import LiveHistoryManager, LiveHistoryValidationError
 from tests.test_backtest import completed_round
 
 
@@ -40,9 +40,11 @@ class LiveHistoryStreamlitE2ETest(unittest.TestCase):
         base_round = completed_round()
         self.pending_round = replace(
             base_round,
+            round_id=1647,
             matches=tuple(
                 replace(
                     match,
+                    round_id=1647,
                     actual_result=None,
                     home_goals=None,
                     away_goals=None,
@@ -283,6 +285,87 @@ class LiveHistoryStreamlitE2ETest(unittest.TestCase):
             app.session_state["version8a_purchase_plan_fingerprint"],
             plan_fingerprint(final_plan),
         )
+        recommended = self.live_manager.load_bets(first_run_id).iloc[0]
+        self.assertEqual(app.session_state["version8a_selected_run"], first_run_id)
+        self.assertEqual(app.session_state["version8a_active_run_id"], first_run_id)
+        self.assertEqual(app.session_state["latest_prediction_run_id"], first_run_id)
+        self.assertIn("version7c_manual_plan", app.session_state)
+        self.assertTrue(final_plan is not None)
+        self.assertEqual(final_plan.source_prediction_run_id, first_run_id)
+        self.assertEqual(
+            app.session_state["version7c_manual_plan_source_prediction_run_id"],
+            first_run_id,
+        )
+        self.assertEqual(
+            app.session_state["version8a_purchase_plan_fingerprint"],
+            plan_fingerprint(final_plan),
+        )
+        self.assertEqual(str(recommended["prediction_run_id"]), first_run_id)
+        self.assertEqual(int(recommended["round_id"]), 1647)
+        self.assertEqual(int(recommended["ticket_count"]), 32)
+        self.assertEqual(int(recommended["planned_purchase_amount_yen"]), 3_200)
+        self.assertTrue(
+            any(
+                metric.label == "商品種別"
+                and metric.value == "toto（13試合）"
+                for metric in app.metric
+            )
+        )
+        self.assertTrue(
+            any(metric.label == "購入口数" and metric.value == "32口" for metric in app.metric)
+        )
+        self.assertTrue(
+            any(
+                metric.label == "購入予定金額" and metric.value == "3,200円"
+                for metric in app.metric
+            )
+        )
+        self.assertTrue(
+            any(metric.label == "Coverage" for metric in app.metric)
+        )
+        self.assertTrue(
+            any("1試合目" in code.value for code in app.code)
+        )
+
+        # Version8-Bタブの操作に相当する別widgetのrerun後も候補を維持する。
+        next(
+            item for item in app.selectbox if item.key == "version8b_period"
+        ).select("直近5開催")
+        app = app.run(timeout=30)
+        self.assertEqual(len(app.exception), 0)
+        self._button(app, "この買い目を実際に購入したとして記録")
+
+        # Session Stateの買い目をすべて失っても、同じrunのrecommendedから復元する。
+        for key in (
+            "version7c_ai_plan",
+            "version7c_manual_plan",
+            "version7c_source_prediction_run_id",
+            "version7c_manual_plan_source_prediction_run_id",
+            "version7c_plan_request",
+        ):
+            if key in app.session_state:
+                del app.session_state[key]
+        app = app.run(timeout=30)
+        self.assertEqual(len(app.exception), 0)
+        self.assertNotIn("version7c_manual_plan", app.session_state)
+        self.assertTrue(
+            any(
+                "購入候補として復元しました" in info.value
+                for info in app.info
+            )
+        )
+        self._button(app, "この買い目を実際に購入したとして記録")
+
+        # 新しいSessionでも、購入前のrecommended履歴だけから候補を復元できる。
+        before_purchase_restart = AppTest.from_file(
+            str(PROJECT_ROOT / "app.py")
+        ).run(timeout=30)
+        self.assertEqual(len(before_purchase_restart.exception), 0)
+        self._button(
+            before_purchase_restart,
+            "この買い目を実際に購入したとして記録",
+        )
+
         self._button(app, "この買い目を実際に購入したとして記録").click()
         app = app.run(timeout=30)
 
@@ -294,6 +377,20 @@ class LiveHistoryStreamlitE2ETest(unittest.TestCase):
         self.assertIn(
             "prediction_run_id",
             self.live_manager.export_bets_csv().decode("utf-8-sig").splitlines()[0],
+        )
+        self.assertEqual(
+            int((purchased["record_type"].astype(str) == "purchased").sum()),
+            1,
+        )
+        app = app.run(timeout=30)
+        self.assertFalse(
+            any(
+                button.label == "この買い目を実際に購入したとして記録"
+                for button in app.button
+            )
+        )
+        self.assertTrue(
+            any("実購入登録済み" in success.value for success in app.success)
         )
 
         # 同じ開催回をもう一度予測すると別runになり、旧買い目は紐付かない。
@@ -308,6 +405,15 @@ class LiveHistoryStreamlitE2ETest(unittest.TestCase):
         self.assertEqual(len(app.error), 0)
         self.assertEqual(len(self.live_manager.load_rounds()), 2)
         self.assertTrue(self.live_manager.load_bets(second_run_id).empty)
+        with self.assertRaisesRegex(
+            LiveHistoryValidationError,
+            "別の予測run",
+        ):
+            self.live_manager.record_purchase(
+                second_run_id,
+                final_plan,
+                actual_purchase_amount_yen=3_200,
+            )
         self.assertFalse(
             any(
                 button.label == "この買い目を実際に購入したとして記録"
@@ -320,6 +426,10 @@ class LiveHistoryStreamlitE2ETest(unittest.TestCase):
         self.assertEqual(len(restarted.exception), 0)
         persisted = self.live_manager.load_bets(first_run_id)
         self.assertEqual(set(persisted["record_type"]), {"recommended", "purchased"})
+        self.assertEqual(
+            int((persisted["record_type"].astype(str) == "purchased").sum()),
+            1,
+        )
         self.assertTrue(
             any(
                 caption.value == "App Version: Version8"

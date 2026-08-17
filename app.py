@@ -1,5 +1,7 @@
 from dataclasses import replace
 from datetime import datetime
+from pathlib import Path
+import runpy
 
 import pandas as pd
 import streamlit as st
@@ -17,8 +19,60 @@ ensure_version7b_model_config()
 ensure_version7b_model_pipeline()
 
 import bet_optimization_ui
+import app_version as _app_version_module
+import live_history as _live_history_module
+import live_history_ui as _live_history_ui_module
 from analysis import render_analysis_tab
 from app_version import APP_VERSION
+
+# Streamlit Cloudのhot rerunではapp.pyだけが再実行され、import済みの補助moduleが
+# 旧deployのまま残る場合がある。app_version.pyの現在ソースを唯一の正として
+# Versionまたはimport契約が古いときだけ、この2修正に関係するソースを読み直す。
+_SOURCE_APP_METADATA = runpy.run_path(
+    str(Path(__file__).with_name("app_version.py"))
+)
+_SOURCE_APP_VERSION = str(_SOURCE_APP_METADATA["APP_VERSION"])
+_SOURCE_RUNTIME_SCHEMA = int(
+    _SOURCE_APP_METADATA["APP_RUNTIME_SCHEMA_VERSION"]
+)
+_HOT_IMPORT_CACHE_IS_STALE = (
+    APP_VERSION != _SOURCE_APP_VERSION
+    or getattr(_app_version_module, "APP_RUNTIME_SCHEMA_VERSION", None)
+    != _SOURCE_RUNTIME_SCHEMA
+)
+if _HOT_IMPORT_CACHE_IS_STALE:
+    setattr(_app_version_module, "APP_VERSION", _SOURCE_APP_VERSION)
+    setattr(
+        _app_version_module,
+        "APP_RUNTIME_SCHEMA_VERSION",
+        _SOURCE_RUNTIME_SCHEMA,
+    )
+    setattr(_app_version_module, "_VERSION8_SOURCE_REFRESH", True)
+    from app_version import APP_VERSION
+
+if APP_VERSION != _SOURCE_APP_VERSION:
+    raise RuntimeError("app_version.pyのAPP_VERSIONを読み込めません。")
+
+_SOURCE_RENDER_LIVE_HISTORY_TAB = None
+if bool(getattr(_app_version_module, "_VERSION8_SOURCE_REFRESH", False)):
+    _fresh_live_history = runpy.run_path(
+        str(Path(__file__).with_name("live_history.py"))
+    )
+    for _name in (
+        "LiveHistoryConflictError",
+        "LiveHistoryError",
+        "LiveHistoryStorageError",
+        "LiveHistoryValidationError",
+        "restore_recommended_bet_plan",
+    ):
+        setattr(_live_history_module, _name, _fresh_live_history[_name])
+    _fresh_live_history_ui = runpy.run_path(
+        str(Path(__file__).with_name("live_history_ui.py"))
+    )
+    _SOURCE_RENDER_LIVE_HISTORY_TAB = _fresh_live_history_ui[
+        "render_live_history_tab"
+    ]
+
 from backtest import BacktestError, backtest_cutoff
 from bet_optimization_ui import render_bet_optimization_tab
 from draw_analysis import render_draw_analysis_tab
@@ -83,6 +137,9 @@ from teams import (
     format_team_option,
     normalize_team_name,
 )
+
+if _SOURCE_RENDER_LIVE_HISTORY_TAB is not None:
+    render_live_history_tab = _SOURCE_RENDER_LIVE_HISTORY_TAB
 
 
 # --------------------------------------------------

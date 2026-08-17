@@ -22,7 +22,16 @@ from typing import Any, Mapping, Optional, Sequence
 
 import pandas as pd
 
-from bet_optimizer import BetPlan, plan_fingerprint, target_source_match_numbers
+from bet_optimizer import (
+    BET_TYPE_COUNTS,
+    BetOptimizationError,
+    BetPlan,
+    BetRecommendation,
+    analyze_match_prediction,
+    build_match_predictions,
+    plan_fingerprint,
+    target_source_match_numbers,
+)
 from draw_predictor import probability_percentages
 from history_manager import JAPAN_TIMEZONE, TotoRound, normalize_toto_payouts
 
@@ -747,6 +756,35 @@ class LiveHistoryManager:
                 BET_IMMUTABLE_COLUMNS,
                 "買い目",
             )
+            selection_signature = _bet_selection_signature(row)
+            if record_type == "purchased":
+                recommendation_id = str(source_recommendation_id or "")
+                if recommendation_id:
+                    source_rows = bets.loc[
+                        bets["bet_record_id"].astype(str) == recommendation_id
+                    ]
+                    if (
+                        len(source_rows) != 1
+                        or str(source_rows.iloc[0]["record_type"])
+                        != "recommended"
+                        or str(source_rows.iloc[0]["prediction_run_id"])
+                        != prediction_run_id
+                        or str(source_rows.iloc[0]["target"]) != plan.target
+                    ):
+                        raise LiveHistoryValidationError(
+                            "実購入元のAI推奨買い目とprediction_run_idが一致しません。"
+                        )
+                same_run_purchases = bets.loc[
+                    (bets["prediction_run_id"].astype(str) == prediction_run_id)
+                    & (bets["record_type"].astype(str) == "purchased")
+                    & (bets["target"].astype(str) == plan.target)
+                ]
+                for _, existing_purchase in same_run_purchases.iterrows():
+                    if (
+                        _bet_selection_signature(existing_purchase)
+                        == selection_signature
+                    ):
+                        return str(existing_purchase["bet_record_id"])
             existing = bets.loc[
                 bets["bet_record_id"].astype(str) == row["bet_record_id"]
             ]
@@ -883,6 +921,190 @@ def generate_prediction_run_id(prediction_time: Optional[datetime] = None) -> st
         + "_"
         + uuid.uuid4().hex
     )
+
+
+def restore_recommended_bet_plan(
+    prediction_run_id: str,
+    recommended_bet: Mapping[str, Any],
+    saved_matches: pd.DataFrame,
+) -> BetPlan:
+    """同じrunの不変recommended履歴から最終買い目を再構成する。
+
+    Version7-Cの最適化は再実行せず、保存済み選択だけを既存の分析構造へ
+    戻す。run・開催回・確率・チーム・口数・Coverageが一致しない履歴は
+    購入候補にしない。
+    """
+
+    run_id = _validate_run_id(prediction_run_id)
+    if not isinstance(recommended_bet, Mapping):
+        raise LiveHistoryValidationError("AI推奨買い目履歴が不正です。")
+    if (
+        str(recommended_bet.get("prediction_run_id", "")) != run_id
+        or str(recommended_bet.get("record_type", "")) != "recommended"
+        or not _as_bool(recommended_bet.get("recommended"))
+        or _as_bool(recommended_bet.get("purchased"))
+    ):
+        raise LiveHistoryValidationError(
+            "AI推奨買い目とprediction_run_idが一致しません。"
+        )
+    target = str(recommended_bet.get("target", ""))
+    if target not in TARGETS:
+        raise LiveHistoryValidationError("AI推奨買い目の対象商品が不正です。")
+    if not isinstance(saved_matches, pd.DataFrame) or len(saved_matches) != 13:
+        raise LiveHistoryStorageError("保存済みの13試合を確認できません。")
+    if set(saved_matches["prediction_run_id"].astype(str)) != {run_id}:
+        raise LiveHistoryValidationError(
+            "保存済み試合とprediction_run_idが一致しません。"
+        )
+    round_id = _strict_positive_int(recommended_bet.get("round_id"), "開催回ID")
+    match_round_ids = {
+        _strict_positive_int(value, "開催回ID")
+        for value in saved_matches["round_id"]
+    }
+    if match_round_ids != {round_id}:
+        raise LiveHistoryValidationError("買い目と開催回が一致しません。")
+
+    display_matches = saved_matches.copy()
+    for index, match in display_matches.iterrows():
+        full_probabilities = {
+            outcome: _strict_probability(
+                match[f"probability_{outcome}"], f"P({outcome})"
+            )
+            for outcome in TOTO_OUTCOMES
+        }
+        displayed = probability_percentages(full_probabilities)
+        for outcome in TOTO_OUTCOMES:
+            display_matches.at[index, f"probability_{outcome}"] = (
+                displayed[outcome] / 100.0
+            )
+    threshold = _strict_unit_interval(
+        recommended_bet.get("draw_candidate_threshold"), "引分候補閾値"
+    )
+    margin = _strict_unit_interval(
+        recommended_bet.get("draw_candidate_margin"), "引分候補の確率差"
+    )
+    try:
+        predictions = build_match_predictions(display_matches, target)
+        analyses = {
+            prediction.source_match_number: analyze_match_prediction(
+                prediction,
+                draw_candidate_threshold=threshold,
+                draw_candidate_margin=margin,
+            )
+            for prediction in predictions
+        }
+    except BetOptimizationError as error:
+        raise LiveHistoryValidationError(
+            f"保存済みAI推奨買い目を復元できません: {error}"
+        ) from error
+
+    try:
+        raw_selections = json.loads(
+            str(recommended_bet.get("selections_json", ""))
+        )
+    except (json.JSONDecodeError, TypeError, ValueError) as error:
+        raise LiveHistoryStorageError("買い目JSONが破損しています。") from error
+    if not isinstance(raw_selections, list):
+        raise LiveHistoryStorageError("買い目JSONが不正です。")
+    expected_numbers = set(target_source_match_numbers(target))
+    if len(raw_selections) != len(expected_numbers):
+        raise LiveHistoryValidationError("買い目の対象試合数が不正です。")
+
+    recommendations: list[BetRecommendation] = []
+    seen_numbers: set[int] = set()
+    for selection in raw_selections:
+        if not isinstance(selection, Mapping):
+            raise LiveHistoryStorageError("買い目JSONが不正です。")
+        source_number = _strict_positive_int(
+            selection.get("source_match_number"), "試合番号"
+        )
+        if source_number in seen_numbers or source_number not in expected_numbers:
+            raise LiveHistoryValidationError("買い目の対象試合が不正です。")
+        seen_numbers.add(source_number)
+        analysis = analyses.get(source_number)
+        if analysis is None:
+            raise LiveHistoryValidationError("買い目と保存済み予測が一致しません。")
+        prediction = analysis.prediction
+        if (
+            _strict_positive_int(selection.get("match_number"), "試合番号")
+            != prediction.match_number
+            or str(selection.get("home_team", "")) != prediction.home_team
+            or str(selection.get("away_team", "")) != prediction.away_team
+        ):
+            raise LiveHistoryValidationError("買い目と保存済み予測が一致しません。")
+        raw_outcomes = selection.get("outcomes", ())
+        if isinstance(raw_outcomes, str) or not isinstance(raw_outcomes, Sequence):
+            raise LiveHistoryStorageError("買い目JSONの結果が不正です。")
+        outcome_set = {str(value) for value in raw_outcomes}
+        outcomes = tuple(
+            outcome for outcome in TOTO_OUTCOMES if outcome in outcome_set
+        )
+        if (
+            not outcomes
+            or len(outcomes) != len(raw_outcomes)
+            or any(str(value) not in TOTO_OUTCOMES for value in raw_outcomes)
+        ):
+            raise LiveHistoryStorageError("買い目JSONの結果が不正です。")
+        bet_type = str(selection.get("bet_type", ""))
+        if BET_TYPE_COUNTS.get(bet_type) != len(outcomes):
+            raise LiveHistoryValidationError("買い目区分と結果数が一致しません。")
+        expected_coverage = sum(
+            prediction.probabilities[outcome] for outcome in outcomes
+        )
+        stored_coverage = _strict_unit_interval(
+            selection.get("coverage"), "試合別Coverage"
+        )
+        if not math.isclose(
+            stored_coverage,
+            expected_coverage,
+            rel_tol=0.0,
+            abs_tol=PROBABILITY_TOLERANCE,
+        ):
+            raise LiveHistoryValidationError("保存済みCoverageが一致しません。")
+        if _strict_bool(selection.get("includes_draw")) != ("0" in outcomes):
+            raise LiveHistoryValidationError("保存済み引分買い目が一致しません。")
+        recommendations.append(
+            BetRecommendation(
+                analysis=analysis,
+                bet_type=bet_type,
+                outcomes=outcomes,
+                reason="保存済みAI推奨",
+            )
+        )
+    if seen_numbers != expected_numbers:
+        raise LiveHistoryValidationError("買い目の対象試合が不正です。")
+    recommendations.sort(key=lambda item: item.analysis.prediction.match_number)
+    plan = BetPlan(
+        target=target,
+        recommendations=tuple(recommendations),
+        draw_candidate_threshold=threshold,
+        draw_candidate_margin=margin,
+        source_prediction_run_id=run_id,
+    )
+    expected_scalars = {
+        "ダブル数": (plan.double_count, recommended_bet.get("double_count")),
+        "トリプル数": (plan.triple_count, recommended_bet.get("triple_count")),
+        "口数": (plan.ticket_count, recommended_bet.get("ticket_count")),
+        "購入予定金額": (
+            plan.purchase_amount_yen,
+            recommended_bet.get("planned_purchase_amount_yen"),
+        ),
+    }
+    for label, (actual, stored) in expected_scalars.items():
+        if actual != _strict_positive_or_zero_int(stored, label):
+            raise LiveHistoryValidationError(f"保存済み{label}が一致しません。")
+    stored_coverage = _strict_unit_interval(
+        recommended_bet.get("coverage"), "Coverage"
+    )
+    if not math.isclose(
+        plan.estimated_full_coverage,
+        stored_coverage,
+        rel_tol=0.0,
+        abs_tol=PROBABILITY_TOLERANCE,
+    ):
+        raise LiveHistoryValidationError("保存済みCoverageが一致しません。")
+    _validate_plan_against_matches(plan, saved_matches)
+    return plan
 
 
 def _validate_run_id(value: Any) -> str:
@@ -1403,6 +1625,28 @@ def _strict_positive_int(value: Any, name: str) -> int:
     return int(number)
 
 
+def _strict_positive_or_zero_int(value: Any, name: str) -> int:
+    if isinstance(value, bool):
+        raise LiveHistoryValidationError(f"{name}が不正です。")
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as error:
+        raise LiveHistoryValidationError(f"{name}が不正です。") from error
+    if not math.isfinite(number) or not number.is_integer() or number < 0:
+        raise LiveHistoryValidationError(f"{name}が不正です。")
+    return int(number)
+
+
+def _strict_unit_interval(value: Any, name: str) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as error:
+        raise LiveHistoryValidationError(f"{name}が不正です。") from error
+    if not math.isfinite(number) or not 0.0 <= number <= 1.0:
+        raise LiveHistoryValidationError(f"{name}が不正です。")
+    return number
+
+
 def _optional_int(value: Any) -> Optional[int]:
     number = _optional_finite(value)
     if number is None or not number.is_integer():
@@ -1473,6 +1717,42 @@ def _stable_json(value: Any, name: str) -> str:
         raise LiveHistoryValidationError(f"{name}をJSONへ保存できません。") from error
 
 
+def _bet_selection_signature(row: Mapping[str, Any]) -> tuple[tuple[int, tuple[str, ...]], ...]:
+    """買い目履歴の対象試合と選択だけを二重登録判定用に正規化する。"""
+
+    try:
+        selections = json.loads(str(row.get("selections_json", "")))
+    except (json.JSONDecodeError, TypeError, ValueError) as error:
+        raise LiveHistoryStorageError("買い目JSONが破損しています。") from error
+    if not isinstance(selections, list):
+        raise LiveHistoryStorageError("買い目JSONが不正です。")
+    signature: list[tuple[int, tuple[str, ...]]] = []
+    seen_numbers: set[int] = set()
+    for selection in selections:
+        if not isinstance(selection, Mapping):
+            raise LiveHistoryStorageError("買い目JSONが不正です。")
+        number = _strict_positive_int(
+            selection.get("source_match_number"), "試合番号"
+        )
+        raw_outcomes = selection.get("outcomes", ())
+        if isinstance(raw_outcomes, str) or not isinstance(raw_outcomes, Sequence):
+            raise LiveHistoryStorageError("買い目JSONの結果が不正です。")
+        outcome_set = {str(value) for value in raw_outcomes}
+        outcomes = tuple(
+            outcome for outcome in TOTO_OUTCOMES if outcome in outcome_set
+        )
+        if (
+            number in seen_numbers
+            or not outcomes
+            or len(outcomes) != len(raw_outcomes)
+            or any(str(value) not in TOTO_OUTCOMES for value in raw_outcomes)
+        ):
+            raise LiveHistoryStorageError("買い目JSONの結果が不正です。")
+        seen_numbers.add(number)
+        signature.append((number, outcomes))
+    return tuple(sorted(signature))
+
+
 def _immutable_hash(row: Mapping[str, Any], columns: Sequence[str]) -> str:
     # CSVへ書かれた後の文字列表現でも同じhashになるようscalarを文字列化する。
     payload = {
@@ -1526,4 +1806,5 @@ __all__ = (
     "ResultUpdateOutcome",
     "SavePredictionOutcome",
     "generate_prediction_run_id",
+    "restore_recommended_bet_plan",
 )
