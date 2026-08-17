@@ -22,6 +22,7 @@ from diagnostic_config import (
     PERIOD_OPTIONS,
     DiagnosticThresholds,
 )
+from diagnostic_metrics import OneVsRestMetrics, evaluate_one_vs_rest
 from draw_evaluation import evaluate_draw_predictions
 from history_manager import JAPAN_TIMEZONE
 from live_history import (
@@ -33,9 +34,7 @@ from live_history import (
 from metrics import (
     TOTO_OUTCOMES,
     ModelMetrics,
-    OneVsRestMetrics,
     evaluate_model,
-    evaluate_one_vs_rest,
     normalize_toto_outcome,
 )
 

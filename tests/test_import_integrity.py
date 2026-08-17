@@ -40,9 +40,14 @@ VERSION8A_MODULES = (
 )
 VERSION8B_MODULES = (
     "diagnostic_config",
+    "diagnostic_metrics",
     "model_diagnostics",
     "diagnostic_history",
     "diagnostic_ui",
+)
+CLEAN_PROCESS_IMPORT_MODULES = (
+    "metrics",
+    *VERSION8B_MODULES,
 )
 VERSION7C_IMPORT_GRAPH_MODULES = {
     "app",
@@ -249,25 +254,42 @@ print("Version7-C clean imports: OK")
             completed.stderr or completed.stdout,
         )
 
-    def test_version8b_modules_import_in_one_clean_process(self) -> None:
-        script = "\n".join(
-            [
-                *(f"import {module}" for module in VERSION8B_MODULES),
-                'print("Version8-B clean imports: OK")',
-            ]
-        )
-        completed = subprocess.run(
-            [sys.executable, "-c", script],
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
+    def test_version8b_modules_import_in_independent_clean_processes(self) -> None:
+        failures = []
+        with tempfile.TemporaryDirectory() as pycache_directory:
+            for module in CLEAN_PROCESS_IMPORT_MODULES:
+                environment = os.environ.copy()
+                environment["PYTHONPYCACHEPREFIX"] = pycache_directory
+                completed = subprocess.run(
+                    [sys.executable, "-c", f"import {module}"],
+                    cwd=PROJECT_ROOT,
+                    env=environment,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    check=False,
+                )
+                if completed.returncode != 0:
+                    failures.append(
+                        f"{module}: {completed.stderr or completed.stdout}"
+                    )
+        self.assertEqual(failures, [])
+
+    def test_model_diagnostics_uses_version8b_diagnostic_metrics(self) -> None:
+        tree = _module_trees()["model_diagnostics"]
+        imports_by_module = {
+            node.module: {alias.name for alias in node.names}
+            for node in tree.body
+            if isinstance(node, ast.ImportFrom) and node.module
+        }
         self.assertEqual(
-            completed.returncode,
-            0,
-            completed.stderr or completed.stdout,
+            imports_by_module["diagnostic_metrics"],
+            {"OneVsRestMetrics", "evaluate_one_vs_rest"},
+        )
+        self.assertTrue(
+            {"OneVsRestMetrics", "evaluate_one_vs_rest"}.isdisjoint(
+                imports_by_module["metrics"]
+            )
         )
 
     def test_app_imports_in_a_clean_python_process(self) -> None:
