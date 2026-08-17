@@ -45,7 +45,7 @@ match_number,match_date,home_team,away_team,home_scored,home_conceded,away_score
 
 ## 実行時キャッシュと履歴
 
-Version6～Version8-Bは`data/cache/`、`data/history/`、`data/config/`を
+Version6～Version8-Cは`data/cache/`、`data/history/`、`data/config/`を
 自動作成し、次を保存します。
 
 - `official_match_results.json`：現行・前シーズン相当の試合結果、順位表、
@@ -64,6 +64,9 @@ Version6～Version8-Bは`data/cache/`、`data/history/`、`data/config/`を
   Coverage、Draw Inclusion、口数、予定/実購入額、simulation/actual ROI
 - `../history/model_diagnostic_history.csv`：Version8-Bの診断日時、対象期間・リーグ・
   Version、主要指標、異常一覧、データ品質、総合状態、使用閾値
+- `../history/model_improvement_history.csv`：Version8-Cの診断run ID、原因候補、
+  改善候補、根拠値、優先度、信頼度、再最適化推奨度、文章モード。Version8-A/B履歴とは
+  分離し、不変hash付きで原子的に保存
 - `../history/version7a_optimization_history.csv`：実行日時、Trial数、時系列の
   Training／Validation期間・試合数、Best Score・係数、全体・引分指標、
   Version6比較、乱数seed

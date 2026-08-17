@@ -365,7 +365,7 @@ class Version7CStreamlitTest(unittest.TestCase):
         app = AppTest.from_file(str(PROJECT_ROOT / "app.py")).run(timeout=25)
 
         self.assertTrue(
-            any(caption.value == "App Version: Version8-B" for caption in app.caption)
+            any(caption.value == "App Version: Version8-C" for caption in app.caption)
         )
         self.assertEqual(len(app.exception), 0)
 

@@ -45,9 +45,16 @@ VERSION8B_MODULES = (
     "diagnostic_history",
     "diagnostic_ui",
 )
+VERSION8C_MODULES = (
+    "improvement_config",
+    "improvement_recommendations",
+    "improvement_history",
+    "improvement_ui",
+)
 CLEAN_PROCESS_IMPORT_MODULES = (
     "metrics",
     *VERSION8B_MODULES,
+    *VERSION8C_MODULES,
 )
 VERSION7C_IMPORT_GRAPH_MODULES = {
     "app",
@@ -254,7 +261,7 @@ print("Version7-C clean imports: OK")
             completed.stderr or completed.stdout,
         )
 
-    def test_version8b_modules_import_in_independent_clean_processes(self) -> None:
+    def test_version8b_and_version8c_modules_import_in_independent_clean_processes(self) -> None:
         failures = []
         with tempfile.TemporaryDirectory() as pycache_directory:
             for module in CLEAN_PROCESS_IMPORT_MODULES:
@@ -274,6 +281,30 @@ print("Version7-C clean imports: OK")
                         f"{module}: {completed.stderr or completed.stdout}"
                     )
         self.assertEqual(failures, [])
+
+    def test_version8c_rules_do_not_import_raw_history_or_mutation_modules(self) -> None:
+        tree = _module_trees()["improvement_recommendations"]
+        imported_modules = {
+            node.module.split(".")[0]
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module
+        }
+        imported_modules.update(
+            alias.name.split(".")[0]
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Import)
+            for alias in node.names
+        )
+        self.assertTrue(
+            {
+                "live_history",
+                "config",
+                "model_config",
+                "parameter_manager",
+                "model_optimizer",
+                "bet_optimizer",
+            }.isdisjoint(imported_modules)
+        )
 
     def test_model_diagnostics_uses_version8b_diagnostic_metrics(self) -> None:
         tree = _module_trees()["model_diagnostics"]

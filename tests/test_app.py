@@ -129,6 +129,7 @@ class StreamlitAppTest(unittest.TestCase):
                 "買い目最適化",
                 "実戦履歴",
                 "モデル診断",
+                "AI改善提案",
             ],
         )
         self.assertGreaterEqual(len(app.selectbox), 29)
@@ -458,6 +459,7 @@ class StreamlitAppTest(unittest.TestCase):
                 "買い目最適化",
                 "実戦履歴",
                 "モデル診断",
+                "AI改善提案",
             ],
         )
         self.assertGreaterEqual(len(app.metric), 8)

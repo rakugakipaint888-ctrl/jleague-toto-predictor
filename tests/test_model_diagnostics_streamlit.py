@@ -17,6 +17,7 @@ from streamlit.testing.v1 import AppTest
 from data_loader import CsvMatchDataSource
 from diagnostic_history import DiagnosticHistoryManager
 from history_manager import TotoRoundLoadResult
+from improvement_history import ImprovementHistoryManager
 from live_history import LiveHistoryManager
 from tests.test_backtest import completed_round
 from tests.test_model_diagnostics import (
@@ -70,6 +71,9 @@ class ModelDiagnosticsStreamlitE2ETest(unittest.TestCase):
         self.diagnostic_manager = DiagnosticHistoryManager(
             root / "model_diagnostic_history.csv"
         )
+        self.improvement_manager = ImprovementHistoryManager(
+            root / "model_improvement_history.csv"
+        )
         self._save_completed_round(1)
         self._save_completed_round(2)
         self.patchers = [
@@ -101,6 +105,10 @@ class ModelDiagnosticsStreamlitE2ETest(unittest.TestCase):
             patch(
                 "diagnostic_history.DiagnosticHistoryManager",
                 return_value=self.diagnostic_manager,
+            ),
+            patch(
+                "improvement_history.ImprovementHistoryManager",
+                return_value=self.improvement_manager,
             ),
         ]
         for patcher in self.patchers:
@@ -148,6 +156,7 @@ class ModelDiagnosticsStreamlitE2ETest(unittest.TestCase):
         self.assertEqual(len(app.exception), 0)
         self.assertIn("実戦履歴", [tab.label for tab in app.tabs])
         self.assertIn("モデル診断", [tab.label for tab in app.tabs])
+        self.assertIn("AI改善提案", [tab.label for tab in app.tabs])
         period = next(
             item for item in app.selectbox if item.key == "version8b_period"
         )
@@ -203,6 +212,29 @@ class ModelDiagnosticsStreamlitE2ETest(unittest.TestCase):
         self.assertTrue(
             any(
                 button.label == "診断履歴CSV"
+                for button in app.download_button
+            )
+        )
+
+        self._button(app, "version8c_generate_recommendations").click()
+        app = app.run(timeout=30)
+        self.assertEqual(len(app.exception), 0)
+        self.assertEqual(len(app.error), 0)
+        subheaders = {item.value for item in app.subheader}
+        for heading in (
+            "1. 現在の状態",
+            "2. 検知された問題",
+            "3. 原因候補",
+            "4. 改善候補",
+            "5. 推奨アクション",
+            "6. 注意事項",
+            "提案履歴",
+        ):
+            self.assertIn(heading, subheaders)
+        self.assertEqual(len(self.improvement_manager.load()), 1)
+        self.assertTrue(
+            any(
+                button.label == "提案履歴CSV"
                 for button in app.download_button
             )
         )

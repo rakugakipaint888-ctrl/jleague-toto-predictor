@@ -42,6 +42,8 @@ from history_manager import (
     TotoHistoryManager,
     create_matches_from_toto_round,
 )
+from improvement_history import ImprovementHistoryManager
+from improvement_ui import render_improvement_recommendations_tab
 from live_history import LiveHistoryManager
 from live_history_ui import render_live_history_tab
 from elo_rating import (
@@ -634,6 +636,7 @@ st.title("⚽ Jリーグ toto予想")
 
 live_history_manager = LiveHistoryManager()
 diagnostic_history_manager = DiagnosticHistoryManager()
+improvement_history_manager = ImprovementHistoryManager()
 
 (
     prediction_tab,
@@ -643,6 +646,7 @@ diagnostic_history_manager = DiagnosticHistoryManager()
     bet_optimization_tab,
     live_history_tab,
     model_diagnostics_tab,
+    improvement_recommendations_tab,
 ) = st.tabs(
     [
         "予想",
@@ -652,6 +656,7 @@ diagnostic_history_manager = DiagnosticHistoryManager()
         "買い目最適化",
         "実戦履歴",
         "モデル診断",
+        "AI改善提案",
     ]
 )
 
@@ -2182,4 +2187,10 @@ with model_diagnostics_tab:
     render_model_diagnostics_tab(
         live_history_manager=live_history_manager,
         diagnostic_history_manager=diagnostic_history_manager,
+    )
+
+
+with improvement_recommendations_tab:
+    render_improvement_recommendations_tab(
+        improvement_history_manager=improvement_history_manager,
     )
