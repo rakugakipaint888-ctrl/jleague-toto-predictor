@@ -28,6 +28,8 @@ from draw_predictor import (
     predict_draw_aware,
     probability_percentages,
 )
+from diagnostic_history import DiagnosticHistoryManager
+from diagnostic_ui import render_model_diagnostics_tab
 from data_loader import (
     TeamRecentStats,
     VenueRecord,
@@ -630,6 +632,9 @@ def create_average_input(
 
 st.title("⚽ Jリーグ toto予想")
 
+live_history_manager = LiveHistoryManager()
+diagnostic_history_manager = DiagnosticHistoryManager()
+
 (
     prediction_tab,
     analysis_tab,
@@ -637,8 +642,17 @@ st.title("⚽ Jリーグ toto予想")
     model_optimization_tab,
     bet_optimization_tab,
     live_history_tab,
+    model_diagnostics_tab,
 ) = st.tabs(
-    ["予想", "分析", "引分分析", "モデル最適化", "買い目最適化", "実戦履歴"]
+    [
+        "予想",
+        "分析",
+        "引分分析",
+        "モデル最適化",
+        "買い目最適化",
+        "実戦履歴",
+        "モデル診断",
+    ]
 )
 
 with prediction_tab:
@@ -2159,6 +2173,13 @@ with bet_optimization_tab:
 
 with live_history_tab:
     render_live_history_tab(
-        live_history_manager=LiveHistoryManager(),
+        live_history_manager=live_history_manager,
         history_manager=toto_history_manager,
+    )
+
+
+with model_diagnostics_tab:
+    render_model_diagnostics_tab(
+        live_history_manager=live_history_manager,
+        diagnostic_history_manager=diagnostic_history_manager,
     )

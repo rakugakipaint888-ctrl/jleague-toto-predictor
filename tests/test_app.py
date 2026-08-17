@@ -121,7 +121,15 @@ class StreamlitAppTest(unittest.TestCase):
         self.assertEqual(len(app.error), 0)
         self.assertEqual(
             [tab.label for tab in app.tabs],
-            ["予想", "分析", "引分分析", "モデル最適化", "買い目最適化", "実戦履歴"],
+            [
+                "予想",
+                "分析",
+                "引分分析",
+                "モデル最適化",
+                "買い目最適化",
+                "実戦履歴",
+                "モデル診断",
+            ],
         )
         self.assertGreaterEqual(len(app.selectbox), 29)
         self.assertGreaterEqual(len(app.number_input), 53)
@@ -442,7 +450,15 @@ class StreamlitAppTest(unittest.TestCase):
         self.assertEqual(len(app.error), 0)
         self.assertEqual(
             [tab.label for tab in app.tabs],
-            ["予想", "分析", "引分分析", "モデル最適化", "買い目最適化", "実戦履歴"],
+            [
+                "予想",
+                "分析",
+                "引分分析",
+                "モデル最適化",
+                "買い目最適化",
+                "実戦履歴",
+                "モデル診断",
+            ],
         )
         self.assertGreaterEqual(len(app.metric), 8)
         self.assertGreaterEqual(len(app.get("vega_lite_chart")), 5)
@@ -473,7 +489,7 @@ class StreamlitAppTest(unittest.TestCase):
         app.run(timeout=20)
 
         self.assertEqual(len(app.exception), 0)
-        self.assertEqual(len(app.selectbox), 38)
+        self.assertEqual(len(app.selectbox), 41)
         # 52平均値 + 順位表18 + 会場別10
         self.assertGreaterEqual(len(app.number_input), 81)
 
@@ -677,7 +693,7 @@ class StreamlitEloIntegrationTest(unittest.TestCase):
         self.assertEqual(len(app.exception), 0)
         self.assertEqual(len(app.error), 0)
         self.assertEqual(len(app.toggle), 5)
-        self.assertEqual(len(app.selectbox), 38)
+        self.assertEqual(len(app.selectbox), 41)
         self.assertEqual(len(app.dataframe), 1)
         elo_table = app.dataframe[0].value
         self.assertEqual(len(elo_table), 60)

@@ -38,6 +38,12 @@ VERSION8A_MODULES = (
     "live_history",
     "live_history_ui",
 )
+VERSION8B_MODULES = (
+    "diagnostic_config",
+    "model_diagnostics",
+    "diagnostic_history",
+    "diagnostic_ui",
+)
 VERSION7C_IMPORT_GRAPH_MODULES = {
     "app",
     "analysis",
@@ -227,6 +233,27 @@ print("Version7-C clean imports: OK")
             [
                 *(f"import {module}" for module in VERSION8A_MODULES),
                 'print("Version8-A clean imports: OK")',
+            ]
+        )
+        completed = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        self.assertEqual(
+            completed.returncode,
+            0,
+            completed.stderr or completed.stdout,
+        )
+
+    def test_version8b_modules_import_in_one_clean_process(self) -> None:
+        script = "\n".join(
+            [
+                *(f"import {module}" for module in VERSION8B_MODULES),
+                'print("Version8-B clean imports: OK")',
             ]
         )
         completed = subprocess.run(
